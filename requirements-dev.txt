@@ -1,0 +1,12 @@
+# Development and CI extras. Install on top of requirements.txt:
+#     pip install -r requirements.txt -r requirements-dev.txt
+-r requirements.txt
+
+pytest==8.3.4
+pytest-asyncio==0.25.2
+# ASGI transport for httpx, so tests hit the app in-process without a
+# live server. httpx is already a runtime dependency.
+anyio==4.15.0
+
+ruff==0.8.6          # lint + format, replaces flake8/black/isort
+mypy==1.14.1

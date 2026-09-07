@@ -1,0 +1,212 @@
+"""Activity log and the outbound webhook queue.
+
+Deliveries are rows, not in-flight coroutines: a crash mid-send leaves a
+pending row the worker picks up again. The idempotency key travels in a
+header so receivers (Zoho, HubSpot, n8n) can dedupe.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import hashlib
+import hmac
+import json
+import logging
+import time
+import uuid
+from typing import Any
+
+import httpx
+
+from . import db
+from .config import settings
+
+log = logging.getLogger("crm.events")
+
+MAX_ATTEMPTS = 6
+BACKOFF_MINUTES = [1, 5, 15, 60, 360]  # then dead
+DELIVERY_TIMEOUT = 10.0
+
+
+async def log_activity(
+    tenant_id: int,
+    action: str,
+    *,
+    user_id: int | None = None,
+    object_type: str | None = None,
+    object_id: int | None = None,
+    meta: dict | None = None,
+    ip: Any = None,
+) -> None:
+    """Audit entry. Logging must never break the request that triggered it."""
+    try:
+        await db.execute(
+            """INSERT INTO activity_log (tenant_id, user_id, action, object_type, object_id, meta, ip)
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7)""",
+            tenant_id,
+            user_id,
+            action,
+            object_type,
+            object_id,
+            # The pool's jsonb codec runs json.dumps itself; a pre-dumped
+            # string would be stored double-encoded (a jsonb string).
+            meta or {},
+            ip,
+        )
+    except Exception as exc:
+        log.error("activity write failed: %s", exc)
+
+
+async def emit(tenant_id: int, event: str, payload: dict) -> None:
+    """Queue one delivery row per subscribed endpoint."""
+    try:
+        endpoints = await db.fetch(
+            """SELECT id FROM webhook_endpoints
+                WHERE tenant_id = $1 AND is_active AND $2 = ANY(events)""",
+            tenant_id,
+            event,
+        )
+        if not endpoints:
+            return
+
+        key = str(uuid.uuid4())
+        body = json.dumps(
+            {"event": event, "sent_at": _now_iso(), "data": payload}, default=str
+        )
+
+        for endpoint in endpoints:
+            await db.execute(
+                """INSERT INTO webhook_deliveries
+                       (tenant_id, endpoint_id, event, idempotency_key, payload)
+                   VALUES ($1, $2, $3, $4, $5::jsonb)
+                   ON CONFLICT (endpoint_id, idempotency_key) DO NOTHING""",
+                tenant_id,
+                endpoint["id"],
+                event,
+                key,
+                body,
+            )
+    except Exception as exc:
+        log.error("webhook enqueue failed: %s", exc)
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+
+    return datetime.now(timezone.utc).isoformat()
+
+
+def sign(secret: str, timestamp: int, body: str) -> str:
+    """Signature covers the timestamp too, so a captured body can't be replayed."""
+    mac = hmac.new(secret.encode(), f"{timestamp}.{body}".encode(), hashlib.sha256)
+    return f"sha256={mac.hexdigest()}"
+
+
+async def _deliver(client: httpx.AsyncClient, row: dict) -> tuple[bool, int | None, str | None]:
+    payload = row["payload"]
+    body = payload if isinstance(payload, str) else json.dumps(payload, default=str)
+    timestamp = int(time.time())
+
+    try:
+        response = await client.post(
+            row["url"],
+            content=body,
+            headers={
+                "content-type": "application/json",
+                "user-agent": "crm-admin-webhooks/1.0",
+                "x-crm-event": row["event"],
+                "x-crm-timestamp": str(timestamp),
+                "x-crm-idempotency-key": str(row["idempotency_key"]),
+                "x-crm-signature": sign(row["secret"], timestamp, body),
+            },
+            timeout=DELIVERY_TIMEOUT,
+        )
+    except httpx.TimeoutException:
+        return False, None, "timeout"
+    except httpx.HTTPError as exc:
+        return False, None, str(exc)[:500]
+
+    ok = 200 <= response.status_code < 300
+    return ok, response.status_code, None if ok else f"HTTP {response.status_code}"
+
+
+async def run_webhook_batch(batch_size: int = 20) -> int:
+    """Drain due deliveries once. Returns how many were attempted."""
+    try:
+        due = await db.fetch(
+            """SELECT d.id, d.event, d.payload, d.attempts, d.idempotency_key,
+                      e.url, e.secret
+                 FROM webhook_deliveries d
+                 JOIN webhook_endpoints e ON e.id = d.endpoint_id AND e.is_active
+                WHERE d.status = 'pending' AND d.next_attempt_at <= now()
+                ORDER BY d.next_attempt_at
+                LIMIT $1
+                FOR UPDATE OF d SKIP LOCKED""",
+            batch_size,
+        )
+    except Exception as exc:
+        log.error("webhook poll failed: %s", exc)
+        return 0
+
+    if not due:
+        return 0
+
+    async with httpx.AsyncClient(follow_redirects=False) as client:
+        for row in due:
+            ok, code, error = await _deliver(client, row)
+            attempts = row["attempts"] + 1
+
+            if ok:
+                await db.execute(
+                    """UPDATE webhook_deliveries
+                          SET status = 'delivered', attempts = $2,
+                              response_code = $3, last_error = NULL
+                        WHERE id = $1""",
+                    row["id"],
+                    attempts,
+                    code,
+                )
+                continue
+
+            dead = attempts >= MAX_ATTEMPTS
+            delay = BACKOFF_MINUTES[min(attempts - 1, len(BACKOFF_MINUTES) - 1)]
+            await db.execute(
+                """UPDATE webhook_deliveries
+                      SET status = $2::delivery_status, attempts = $3,
+                          response_code = $4, last_error = $5,
+                          next_attempt_at = now() + make_interval(mins => $6)
+                    WHERE id = $1""",
+                row["id"],
+                "dead" if dead else "pending",
+                attempts,
+                code,
+                (error or "")[:500],
+                delay,
+            )
+
+    return len(due)
+
+
+async def webhook_worker() -> None:
+    """Background loop. Cancelled on shutdown by the lifespan handler."""
+    while True:
+        try:
+            await run_webhook_batch()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # one bad batch must not kill the loop
+            log.error("webhook worker error: %s", exc)
+        await asyncio.sleep(settings.webhook_poll_seconds)
+
+
+async def session_prune_worker() -> None:
+    from .security import prune_sessions
+
+    while True:
+        await asyncio.sleep(3600)
+        try:
+            await prune_sessions()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            log.error("prune worker error: %s", exc)

@@ -1,0 +1,51 @@
+# Zero-install option: PostgreSQL + the app, schema applied on first boot.
+#
+#   docker compose up --build
+#   docker compose exec app python -m db.seed      # once, creates the owner
+#
+# Data persists in the pgdata volume; `docker compose down -v` wipes it.
+
+services:
+  db:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: crm
+      POSTGRES_PASSWORD: crm
+      POSTGRES_DB: crm
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+      # Anything in /docker-entrypoint-initdb.d runs once, on an empty
+      # volume, as the superuser — so the extensions install cleanly.
+      - ./db/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U crm -d crm"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+    ports:
+      - "5432:5432"
+
+  app:
+    build: .
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      ENV: development
+      DATABASE_URL: postgres://crm:crm@db:5432/crm
+      PUBLIC_FORM_ORIGINS: "*"
+      TRUST_PROXY_HOPS: "0"
+      RUN_WORKERS: "1"
+      OWNER_EMAIL: ${OWNER_EMAIL:-admin@example.com}
+      OWNER_PASSWORD: ${OWNER_PASSWORD:-ChangeMe!2026}
+    ports:
+      - "8000:8000"
+    # Dev override: single worker with reload so edits land without a rebuild.
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./app:/app/app:ro
+      - ./public:/app/public:ro
+      - ./db:/app/db:ro
+
+volumes:
+  pgdata:

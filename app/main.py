@@ -1,0 +1,189 @@
+"""FastAPI application wiring.
+
+The JSON error shape is `{"error": "..."}` throughout, matching what the
+SPA reads. FastAPI's default is `{"detail": ...}`, so both HTTPException
+and validation errors are remapped below.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import logging
+from contextlib import asynccontextmanager
+from pathlib import Path
+
+from fastapi import FastAPI, Request
+from fastapi.exceptions import RequestValidationError
+from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
+from starlette.exceptions import HTTPException as StarletteHTTPException
+
+from . import db, events
+from .config import settings
+from .routers import admin, auth, intake, leads, pages
+
+logging.basicConfig(
+    level=logging.INFO if not settings.debug else logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(name)s %(message)s",
+)
+log = logging.getLogger("crm")
+
+PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
+
+CSP = "; ".join(
+    [
+        "default-src 'self'",
+        "script-src 'self'",
+        "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+        "font-src 'self' https://fonts.gstatic.com",
+        "img-src 'self' data:",
+        "connect-src 'self'",
+        "frame-ancestors 'none'",
+        "base-uri 'self'",
+        "form-action 'self'",
+    ]
+)
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    await db.connect()
+    await db.fetch("SELECT 1")
+    log.info("database ready")
+
+    tasks: list[asyncio.Task] = []
+    if settings.run_workers:
+        # Across several tasks or uvicorn workers, run these in ONE
+        # dedicated process (RUN_WORKERS=0 elsewhere) rather than polling
+        # from every replica.
+        tasks.append(asyncio.create_task(events.webhook_worker()))
+        tasks.append(asyncio.create_task(events.session_prune_worker()))
+
+    try:
+        yield
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await db.disconnect()
+        log.info("shutdown complete")
+
+
+app = FastAPI(
+    title="CRM Admin",
+    version="0.1.0",
+    lifespan=lifespan,
+    docs_url="/api/docs" if settings.debug else None,
+    redoc_url=None,
+    openapi_url="/api/openapi.json" if settings.debug else None,
+)
+
+
+# ------------------------------------------------------ security headers
+@app.middleware("http")
+async def security_headers(request: Request, call_next):
+    response = await call_next(request)
+    response.headers["x-content-type-options"] = "nosniff"
+    # setdefault: rendered pages (public + editor preview) set their own
+    # CSP and framing policy; everything else gets the strict defaults.
+    response.headers.setdefault("x-frame-options", "DENY")
+    response.headers["referrer-policy"] = "strict-origin-when-cross-origin"
+    response.headers["permissions-policy"] = "geolocation=(), microphone=(), camera=()"
+    response.headers.setdefault("content-security-policy", CSP)
+    if settings.env == "production":
+        response.headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+# --------------------------------------------------- CORS for intake only
+@app.middleware("http")
+async def public_form_cors(request: Request, call_next):
+    """The admin API stays same-origin; only the intake path is cross-origin.
+
+    A blanket CORSMiddleware would open the authenticated API too."""
+    origin = request.headers.get("origin")
+    is_public = request.url.path.startswith("/api/public")
+    allowed = origin and is_public and (
+        "*" in settings.public_form_origins or origin in settings.public_form_origins
+    )
+
+    if request.method == "OPTIONS" and is_public:
+        response = Response(status_code=204)
+    else:
+        response = await call_next(request)
+
+    if allowed:
+        response.headers["access-control-allow-origin"] = origin
+        response.headers["vary"] = "Origin"
+        response.headers["access-control-allow-headers"] = "content-type"
+        response.headers["access-control-max-age"] = "86400"
+    return response
+
+
+# ------------------------------------------------------- error responses
+@app.exception_handler(StarletteHTTPException)
+async def http_error(request: Request, exc: StarletteHTTPException):
+    return JSONResponse(
+        status_code=exc.status_code,
+        content={"error": exc.detail},
+        headers=getattr(exc, "headers", None),
+    )
+
+
+@app.exception_handler(RequestValidationError)
+async def validation_error(request: Request, exc: RequestValidationError):
+    first = exc.errors()[0] if exc.errors() else {}
+    field = ".".join(str(part) for part in first.get("loc", [])[1:]) or "request"
+    return JSONResponse(
+        status_code=400,
+        content={"error": f"{field}: {first.get('msg', 'is not valid')}"},
+    )
+
+
+@app.exception_handler(Exception)
+async def unhandled_error(request: Request, exc: Exception):
+    # Detail stays in the logs; the client gets a stable, non-leaky message.
+    log.exception("unhandled error on %s %s", request.method, request.url.path)
+    return JSONResponse(status_code=500, content={"error": "Something went wrong on our side."})
+
+
+# ---------------------------------------------------------------- routes
+@app.get("/healthz")
+async def healthz() -> dict:
+    return {"ok": True}
+
+
+app.include_router(intake.router)  # unauthenticated
+app.include_router(auth.router)
+app.include_router(leads.router)
+app.include_router(pages.router)
+app.include_router(pages.public_router)  # published pages, unauthenticated
+app.include_router(admin.router)
+
+
+# ------------------------------------------------------------ static SPA
+app.mount("/css", StaticFiles(directory=PUBLIC_DIR / "css"), name="css")
+app.mount("/js", StaticFiles(directory=PUBLIC_DIR / "js"), name="js")
+
+
+@app.get("/login", include_in_schema=False)
+async def login_page() -> FileResponse:
+    return FileResponse(PUBLIC_DIR / "login.html")
+
+
+@app.get("/register", include_in_schema=False)
+async def register_page() -> FileResponse:
+    return FileResponse(PUBLIC_DIR / "register.html")
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa(full_path: str) -> FileResponse:
+    """Serve the admin shell for any non-API path."""
+    candidate = (PUBLIC_DIR / full_path).resolve()
+    if (
+        full_path
+        and candidate.is_file()
+        and candidate.is_relative_to(PUBLIC_DIR)  # no traversal out of public/
+    ):
+        return FileResponse(candidate)
+    return FileResponse(PUBLIC_DIR / "index.html")

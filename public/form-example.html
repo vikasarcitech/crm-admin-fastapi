@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contact form — intake example</title>
+  <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>Talk to us</h1>
+      <p class="lede">This is the client-side half of the intake API. Copy it into a theme template.</p>
+
+      <div class="login-error hidden" id="error" role="alert"></div>
+      <div class="notice hidden" id="done">Thanks — we will be in touch shortly.</div>
+
+      <form id="lead-form" novalidate>
+        <label class="field"><span>Name</span>
+          <input type="text" name="full_name" required autocomplete="name"></label>
+        <label class="field"><span>Email</span>
+          <input type="email" name="email" required autocomplete="email"></label>
+        <label class="field"><span>Phone</span>
+          <input type="tel" name="phone" autocomplete="tel"></label>
+        <label class="field"><span>Company</span>
+          <input type="text" name="company" autocomplete="organization"></label>
+        <label class="field"><span>How can we help?</span>
+          <textarea name="message" required></textarea></label>
+
+        <!-- Honeypot: hidden from people, irresistible to bots. Keep it
+             off-screen rather than display:none — some bots skip those. -->
+        <div class="sr-only" aria-hidden="true">
+          <label>Leave this empty<input type="text" name="_hp" tabindex="-1" autocomplete="off"></label>
+        </div>
+
+        <button class="btn btn-primary" type="submit" id="submit">Send enquiry</button>
+      </form>
+    </div>
+  </div>
+
+  <script src="/js/form-embed.js"></script>
+</body>
+</html>

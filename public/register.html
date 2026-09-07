@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Create a workspace — CRM Admin</title>
+  <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>Create a workspace</h1>
+      <p class="lede">Your own pipeline, pages and team — you sign in as the owner.</p>
+
+      <div class="login-error hidden" id="error" role="alert"></div>
+
+      <form id="register-form" novalidate>
+        <label class="field">
+          <span>Workspace name</span>
+          <input type="text" name="workspace" id="workspace" autocomplete="organization"
+                 placeholder="Acme Marketing" required>
+        </label>
+        <label class="field">
+          <span>Your name</span>
+          <input type="text" name="display_name" id="display_name" autocomplete="name" required>
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input type="email" name="email" id="email" autocomplete="username" required>
+        </label>
+        <label class="field">
+          <span>Password (12+ characters)</span>
+          <input type="password" name="password" id="password" autocomplete="new-password"
+                 minlength="12" required>
+        </label>
+        <button class="btn btn-primary" type="submit" id="submit">Create workspace</button>
+      </form>
+
+      <p class="lede" style="margin-top:16px">
+        Already have an account? <a href="/login">Sign in</a>
+      </p>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/register.js"></script>
+</body>
+</html>

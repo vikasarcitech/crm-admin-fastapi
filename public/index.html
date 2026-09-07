@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Leads — CRM Admin</title>
+  <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">CRM</span>
+        <span class="brand-name" id="tenant-name">Loading…</span>
+      </div>
+      <nav class="nav" id="nav" aria-label="Sections"></nav>
+      <div class="sidebar-foot">
+        <strong id="user-name">—</strong>
+        <span id="user-role" class="mono"></span>
+        <button type="button" id="sign-out">Sign out</button>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="page-head">
+        <div>
+          <h1 id="page-title">Dashboard</h1>
+          <p class="page-sub" id="page-sub"></p>
+        </div>
+        <div class="spacer"></div>
+        <div id="page-actions" class="row-actions"></div>
+      </header>
+      <div class="page-body" id="view" aria-live="polite"></div>
+    </main>
+  </div>
+
+  <div id="drawer-host"></div>
+  <div class="toast-host" id="toast-host" role="status" aria-live="polite"></div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/ui.js"></script>
+  <script src="/js/views.js"></script>
+  <script src="/js/pages.js"></script>
+  <script src="/js/app.js"></script>
+</body>
+</html>
