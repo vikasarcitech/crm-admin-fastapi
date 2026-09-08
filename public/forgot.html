@@ -1,0 +1,40 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Reset password — CRM Admin</title>
+  <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>Reset your password</h1>
+      <p class="lede">We will email you a link that works for 30 minutes.</p>
+
+      <div class="login-error hidden" id="error" role="alert"></div>
+
+      <form id="forgot-form" novalidate>
+        <label class="field">
+          <span>Workspace</span>
+          <input type="text" name="tenant" id="tenant" autocomplete="organization"
+                 placeholder="demo" spellcheck="false">
+        </label>
+        <label class="field">
+          <span>Email</span>
+          <input type="email" name="email" id="email" autocomplete="username" required>
+        </label>
+        <button class="btn btn-primary" type="submit" id="submit">Email me a reset link</button>
+      </form>
+
+      <p class="lede" style="margin-top:16px">
+        <a href="/login">Back to sign in</a>
+      </p>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/forgot.js"></script>
+</body>
+</html>

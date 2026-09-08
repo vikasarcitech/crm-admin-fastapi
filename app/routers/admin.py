@@ -1,7 +1,6 @@
 """Dashboard, users, webhooks, activity and settings."""
 
 import ipaddress
-import re
 import secrets
 from typing import Any
 from urllib.parse import urlparse
@@ -21,8 +20,13 @@ from ..security import (
 
 router = APIRouter(prefix="/api", tags=["admin"])
 
+# Roles that can create or grant other elevated roles.
+ELEVATED_ROLES = {UserRole.owner, UserRole.super_admin}
+
 SETTING_KEYS = {"notify_emails", "spam", "branding", "pipeline"}
-ALLOWED_EVENTS = {"lead.created", "lead.status_changed"}
+# The platform's full event catalogue (app/events.py), so a webhook
+# can subscribe to publishes and build failures, not just leads.
+ALLOWED_EVENTS = events.PLATFORM_EVENTS
 
 
 # ============================================================== dashboard
@@ -130,8 +134,8 @@ async def create_user(
     request: Request,
     user: CurrentUser = Depends(require_role("admin")),
 ) -> dict:
-    if payload.role is UserRole.owner and user.role != "owner":
-        raise HTTPException(403, "Only an owner can add owners.")
+    if payload.role in ELEVATED_ROLES and user.role not in ELEVATED_ROLES:
+        raise HTTPException(403, "Only an owner can add owners or super admins.")
 
     scoped = db.TenantDB(user.tenant_id)
     existing = await scoped.fetch_one(
@@ -174,8 +178,8 @@ async def update_user(
     )
     if not target:
         raise HTTPException(404, "That user no longer exists.")
-    if target["role"] == "owner" and user.role != "owner":
-        raise HTTPException(403, "Only an owner can change an owner.")
+    if target["role"] in {"owner", "super_admin"} and user.role not in {"owner", "super_admin"}:
+        raise HTTPException(403, "Only an owner can change an owner or super admin.")
 
     sent = payload.model_dump(exclude_unset=True)
     if not sent:
@@ -191,8 +195,8 @@ async def update_user(
     if "display_name" in sent:
         assign("display_name", payload.display_name or "Unnamed")
     if "role" in sent:
-        if payload.role is UserRole.owner and user.role != "owner":
-            raise HTTPException(403, "Only an owner can grant owner access.")
+        if payload.role in ELEVATED_ROLES and user.role not in ELEVATED_ROLES:
+            raise HTTPException(403, "Only an owner can grant owner or super admin access.")
         assign("role", payload.role.value, "::user_role")
     if "is_active" in sent:
         if user_id == user.id and payload.is_active is False:

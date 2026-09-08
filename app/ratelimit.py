@@ -58,3 +58,5 @@ login_limiter = RateLimiter(max_requests=10, window_seconds=600)
 intake_limiter = RateLimiter(max_requests=8, window_seconds=600)
 # Each signup creates a tenant; keep the budget tight per IP.
 signup_limiter = RateLimiter(max_requests=3, window_seconds=3600)
+# Reset requests send email; a loose limit here is a spam cannon.
+reset_limiter = RateLimiter(max_requests=5, window_seconds=3600)

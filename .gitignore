@@ -1,0 +1,22 @@
+# Secrets. .env.example is the template that belongs in the repo; .env
+# never does — it carries the database password.
+.env
+.env.*
+!.env.example
+
+# Virtualenv and caches
+.venv/
+__pycache__/
+*.py[cod]
+.ruff_cache/
+.mypy_cache/
+.pytest_cache/
+
+# Locally stored media and backups (MEDIA_STORAGE=local, BACKUP path).
+# In production these live in S3; committing them would put client
+# uploads in git history.
+var/
+
+# OS noise
+.DS_Store
+Thumbs.db

@@ -73,6 +73,10 @@ fi
 
 say "Applying schema"
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/schema.sql
+# Platform tables (content, media, SEO, marketing, ops, compliance).
+# Both files are idempotent, and platform.sql extends what schema.sql
+# creates, so the order matters.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/platform.sql
 
 # ------------------------------------------------------------------- seed
 if [ -z "${OWNER_EMAIL:-}" ] || [ "${OWNER_EMAIL}" = "admin@example.com" ]; then
@@ -91,6 +95,11 @@ cat <<EOF
 
   Test form: http://localhost:${PORT:-8000}/form-example.html
   API docs:  http://localhost:${PORT:-8000}/api/docs
+
+  Frontend API for this workspace:
+    Config:   http://localhost:${PORT:-8000}/api/v1/${SEED_TENANT_SLUG:-demo}/config
+    Content:  http://localhost:${PORT:-8000}/api/v1/${SEED_TENANT_SLUG:-demo}/all
+    Sitemap:  http://localhost:${PORT:-8000}/api/v1/${SEED_TENANT_SLUG:-demo}/sitemap.xml
 
 EOF
 say "Starting server (Ctrl+C to stop)"

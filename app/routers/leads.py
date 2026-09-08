@@ -403,3 +403,120 @@ async def add_note(
         ip=db.to_inet(client_ip(request)),
     )
     return {"note": {**note, "author": user.name}}
+
+
+@router.get("/{lead_id}/timeline")
+async def lead_timeline(lead_id: int, scoped: db.TenantDB = Depends(tenant_db)) -> dict:
+    """One merged history for a lead: notes, audit entries, conversion
+    events and its own form submission, newest first.
+
+    Merged in Python rather than a UNION so each source keeps its own
+    shape — the UI renders a note differently from a status change, and
+    a three-way UNION would flatten them into a lowest-common-denominator
+    row.
+    """
+    lead = await scoped.fetch_one(
+        """SELECT l.id, l.full_name, l.email::text AS email, l.status::text AS status,
+                  l.created_at, l.assigned_to, u.display_name AS assignee_name,
+                  f.name AS form_name
+             FROM leads l
+             LEFT JOIN users u ON u.id = l.assigned_to
+             LEFT JOIN forms f ON f.id = l.form_id
+            WHERE l.tenant_id = $1 AND l.id = $2""",
+        lead_id,
+    )
+    if not lead:
+        raise HTTPException(404, "That lead no longer exists.")
+
+    entries: list[dict] = []
+
+    for note in await scoped.fetch(
+        """SELECT n.id, n.body, n.created_at, u.display_name AS actor
+             FROM lead_notes n LEFT JOIN users u ON u.id = n.user_id
+            WHERE n.tenant_id = $1 AND n.lead_id = $2""",
+        lead_id,
+    ):
+        entries.append(
+            {
+                "kind": "note",
+                "at": note["created_at"],
+                "actor": note["actor"],
+                "title": "Note added",
+                "detail": note["body"],
+                "id": note["id"],
+            }
+        )
+
+    for entry in await scoped.fetch(
+        """SELECT a.id, a.action, a.meta, a.created_at, u.display_name AS actor
+             FROM activity_log a LEFT JOIN users u ON u.id = a.user_id
+            WHERE a.tenant_id = $1 AND a.object_type = 'lead' AND a.object_id = $2""",
+        lead_id,
+    ):
+        entries.append(
+            {
+                "kind": "activity",
+                "at": entry["created_at"],
+                "actor": entry["actor"],
+                "title": _describe_lead_action(entry["action"], entry["meta"] or {}),
+                "detail": None,
+                "meta": entry["meta"],
+                "id": entry["id"],
+            }
+        )
+
+    for conversion in await scoped.fetch(
+        """SELECT id, kind, name, label, source_page, created_at
+             FROM conversion_events WHERE tenant_id = $1 AND lead_id = $2""",
+        lead_id,
+    ):
+        entries.append(
+            {
+                "kind": "conversion",
+                "at": conversion["created_at"],
+                "actor": None,
+                "title": f"{conversion['kind'].title()} conversion: {conversion['name']}",
+                "detail": conversion["source_page"],
+                "id": conversion["id"],
+            }
+        )
+
+    for submission in await scoped.fetch(
+        """SELECT s.id, s.payload, s.created_at, f.name AS form_name
+             FROM form_submissions s LEFT JOIN forms f ON f.id = s.form_id
+            WHERE s.tenant_id = $1 AND s.lead_id = $2""",
+        lead_id,
+    ):
+        entries.append(
+            {
+                "kind": "submission",
+                "at": submission["created_at"],
+                "actor": None,
+                "title": f"Submitted “{submission['form_name'] or 'a form'}”",
+                "detail": None,
+                "payload": submission["payload"],
+                "id": submission["id"],
+            }
+        )
+
+    entries.sort(key=lambda entry: entry["at"], reverse=True)
+    return {"lead": lead, "timeline": entries}
+
+
+LEAD_ACTION_LABELS = {
+    "lead.created": "Lead captured",
+    "lead.updated": "Lead updated",
+    "lead.status_changed": "Status changed",
+    "lead.assigned": "Assigned",
+    "lead.note_added": "Note added",
+    "lead.deleted": "Lead deleted",
+}
+
+
+def _describe_lead_action(action: str, meta: dict) -> str:
+    label = LEAD_ACTION_LABELS.get(action, action.replace("lead.", "").replace("_", " ").title())
+    if action == "lead.status_changed" and meta.get("to"):
+        return f"Status → {meta['to']}"
+    if meta.get("fields"):
+        return f"{label}: {', '.join(str(f) for f in meta['fields'][:6])}"
+    return label

@@ -10,3 +10,8 @@ anyio==4.15.0
 
 ruff==0.8.6          # lint + format, replaces flake8/black/isort
 mypy==1.14.1
+
+# Browser-driven verification of the admin SPA. Installs a ~100 MB
+# Chromium on first use:
+#     pip install -r requirements-dev.txt && playwright install chromium
+playwright==1.62.0

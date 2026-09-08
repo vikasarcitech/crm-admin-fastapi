@@ -90,14 +90,31 @@
   }
 
   // ------------------------------------------------------------ drawer
-  let closeDrawerFn = null;
+  /**
+   * Drawers are a stack, not a single slot.
+   *
+   * The menu and form builders open an "add item" drawer on top of the
+   * builder they belong to. With one slot, opening the child destroyed
+   * the parent and its unsaved state, so each openDrawer() pushes a
+   * layer and returns a handle that closes that layer specifically.
+   */
+  const layers = [];
 
   function openDrawer({ title, subtitle, body, actions }) {
-    closeDrawer();
     const host = document.getElementById('drawer-host');
+    const depth = layers.length;
 
-    const backdrop = h('div.drawer-backdrop', { onclick: closeDrawer });
-    const panel = h('aside.drawer', { role: 'dialog', 'aria-modal': 'true', 'aria-label': title }, [
+    const backdrop = h('div.drawer-backdrop', {
+      style: depth ? `z-index:${40 + depth * 2}` : null,
+      onclick: () => closeTop(),
+    });
+    const panel = h('aside.drawer', {
+      role: 'dialog',
+      'aria-modal': 'true',
+      'aria-label': title,
+      style: depth ? `z-index:${41 + depth * 2}` : null,
+      dataset: { depth: String(depth) },
+    }, [
       h('div.drawer-head', {}, [
         h('div', {}, [
           h('h2', { text: title }),
@@ -105,28 +122,62 @@
         ]),
         h('div.spacer'),
         actions || null,
-        h('button.icon-btn', { type: 'button', 'aria-label': 'Close', text: '\u00d7', onclick: closeDrawer }),
+        h('button.icon-btn', {
+          type: 'button', 'aria-label': 'Close', text: '\u00d7',
+          onclick: () => closeTop(),
+        }),
       ]),
       h('div.drawer-body', {}, body),
     ]);
 
-    mount(host, [backdrop, panel]);
+    host.appendChild(backdrop);
+    host.appendChild(panel);
     document.body.style.overflow = 'hidden';
 
-    const onKey = (e) => { if (e.key === 'Escape') closeDrawer(); };
+    const onKey = (e) => {
+      // Only the topmost drawer answers Escape.
+      if (e.key === 'Escape' && layers[layers.length - 1]?.panel === panel) {
+        e.stopPropagation();
+        closeTop();
+      }
+    };
     document.addEventListener('keydown', onKey);
     panel.querySelector('button, input, select, textarea, a')?.focus();
 
-    closeDrawerFn = () => {
-      document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = '';
-      clear(host);
-      closeDrawerFn = null;
-    };
-    return { close: closeDrawer, body: panel.querySelector('.drawer-body') };
+    const layer = { backdrop, panel, onKey };
+    layers.push(layer);
+
+    const close = () => closeLayer(layer);
+    return { close, body: panel.querySelector('.drawer-body') };
   }
 
-  function closeDrawer() { if (closeDrawerFn) closeDrawerFn(); }
+  function removeLayer(layer) {
+    document.removeEventListener('keydown', layer.onKey);
+    layer.backdrop.remove();
+    layer.panel.remove();
+  }
+
+  /** Close one layer and everything stacked above it. */
+  function closeLayer(layer) {
+    const index = layers.indexOf(layer);
+    if (index === -1) return;
+    layers.splice(index).forEach(removeLayer);
+    if (!layers.length) document.body.style.overflow = '';
+  }
+
+  function closeTop() {
+    const top = layers[layers.length - 1];
+    if (top) closeLayer(top);
+  }
+
+  /** Back-compatible: closes the topmost drawer. */
+  function closeDrawer() { closeTop(); }
+
+  /** Route changes clear the whole stack. */
+  function closeAllDrawers() {
+    layers.splice(0).forEach(removeLayer);
+    document.body.style.overflow = '';
+  }
 
   // ------------------------------------------------------- small parts
   const spinner = () => h('div.empty', { text: 'Loading…' });
@@ -142,7 +193,8 @@
         h('option', { value: val, selected: String(val) === String(value ?? ''), text: label })));
 
   window.ui = {
-    h, clear, mount, toast, openDrawer, closeDrawer, spinner, emptyState,
+    h, clear, mount, toast, openDrawer, closeDrawer, closeAllDrawers,
+    spinner, emptyState,
     field, select, statusPill, formatDate, relativeTime, STATUS_LABELS,
   };
 }());

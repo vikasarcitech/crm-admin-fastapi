@@ -1,5 +1,13 @@
 .venv
 .env
+.env.*
 __pycache__
 *.pyc
 .git
+.gitignore
+.ruff_cache
+.mypy_cache
+.pytest_cache
+.DS_Store
+# Locally uploaded media must not be baked into the image.
+var

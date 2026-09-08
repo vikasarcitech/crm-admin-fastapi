@@ -54,6 +54,8 @@
     put: (p, b) => request('PUT', p, b ?? {}),
     del: (p) => request('DELETE', p, {}),
     setCsrf: (t) => { csrfToken = t; },
+    /** Read the token back, for multipart uploads that bypass request(). */
+    csrf: () => csrfToken,
     /** Build a query string, dropping empty values. */
     qs: (params) => {
       const s = new URLSearchParams();

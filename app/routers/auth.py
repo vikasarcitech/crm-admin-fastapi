@@ -1,12 +1,22 @@
 import re
+import secrets
+from datetime import datetime, timedelta, timezone
 
 import asyncpg
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
-from .. import db, events
+from .. import bootstrap, db, events, mail
+from . import users
 from ..config import settings
-from ..ratelimit import login_limiter, signup_limiter
-from ..schemas import LoginRequest, RegisterRequest, collapse
+from ..ratelimit import login_limiter, reset_limiter, signup_limiter
+from ..schemas import (
+    ForgotRequest,
+    LoginRequest,
+    RegisterRequest,
+    ResetRequest,
+    TwoFactorLogin,
+    collapse,
+)
 from ..security import (
     CurrentUser,
     client_ip,
@@ -14,6 +24,7 @@ from ..security import (
     destroy_session,
     hash_password,
     optional_user,
+    sha256,
     verify_credentials,
 )
 
@@ -61,6 +72,17 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
     if not user:
         raise HTTPException(401, generic)
 
+    # 2FA: the password was right, but no session is issued yet. The
+    # challenge is a separate short-lived row, so a pending second
+    # factor can never be mistaken for a signed-in session.
+    if await users.has_totp(user["id"]):
+        challenge = await users.create_totp_challenge(user)
+        await events.log_activity(
+            tenant["id"], "auth.2fa_required", user_id=user["id"],
+            ip=db.to_inet(client_ip(request)),
+        )
+        return {"twoFactorRequired": True, "challenge": challenge}
+
     csrf = await create_session(user, request, response)
     await events.log_activity(
         tenant["id"],
@@ -83,6 +105,16 @@ async def login(payload: LoginRequest, request: Request, response: Response) -> 
         },
         "csrfToken": csrf,
     }
+
+
+@router.post("/2fa")
+async def two_factor(
+    payload: TwoFactorLogin, request: Request, response: Response
+) -> dict:
+    """Second step of a 2FA sign-in: challenge + code (or recovery code)."""
+    return await users.complete_totp_login(
+        payload.challenge, payload.code, request, response
+    )
 
 
 def _slug_base(name: str) -> str:
@@ -147,6 +179,12 @@ async def register(payload: RegisterRequest, request: Request, response: Respons
         # Two sign-ups raced for the same slug between check and insert.
         raise HTTPException(400, "That workspace name is taken. Try another.") from None
 
+    # Content types, taxonomies, menus, email templates and default
+    # settings. Outside the transaction on purpose: a workspace that
+    # provisions partially is usable and re-provisions on next sign-in,
+    # whereas rolling back sign-up over a default menu would not be.
+    await bootstrap.provision_tenant(tenant["id"], created_by=owner["id"])
+
     csrf = await create_session(dict(owner), request, response)
     await events.log_activity(
         tenant["id"],
@@ -170,6 +208,85 @@ async def register(payload: RegisterRequest, request: Request, response: Respons
         },
         "csrfToken": csrf,
     }
+
+
+RESET_TOKEN_MINUTES = 30
+
+
+@router.post("/forgot")
+async def forgot_password(payload: ForgotRequest, request: Request) -> dict:
+    """Send a reset link. The response never reveals whether the account exists."""
+    reset_limiter.check(client_ip(request) or "unknown")
+    generic = {"ok": True, "message": "If that account exists, a reset link is on its way."}
+
+    tenant = await _resolve_tenant(request, payload.tenant)
+    if not tenant:
+        return generic
+    user = await db.fetch_one(
+        "SELECT id, email FROM users WHERE tenant_id = $1 AND email = $2 AND is_active",
+        tenant["id"],
+        payload.email,
+    )
+    if not user:
+        return generic
+
+    token = secrets.token_urlsafe(32)
+    await db.execute(
+        """INSERT INTO password_resets (token_hash, user_id, tenant_id, expires_at)
+           VALUES ($1, $2, $3, $4)""",
+        sha256(token),
+        user["id"],
+        tenant["id"],
+        datetime.now(timezone.utc) + timedelta(minutes=RESET_TOKEN_MINUTES),
+    )
+
+    host = (request.headers.get("host") or "").split(",")[0].strip()
+    base = settings.app_base_url or f"{request.url.scheme}://{host}"
+    subject, body = mail.password_reset(f"{base}/reset?token={token}", tenant["name"])
+    await mail.enqueue(tenant["id"], [user["email"]], subject, body, kind="auth.reset")
+
+    await events.log_activity(
+        tenant["id"],
+        "auth.password_reset_requested",
+        object_type="user",
+        object_id=user["id"],
+        ip=db.to_inet(client_ip(request)),
+    )
+    return generic
+
+
+@router.post("/reset")
+async def reset_password(payload: ResetRequest, request: Request) -> dict:
+    reset_limiter.check(client_ip(request) or "unknown")
+
+    row = await db.fetch_one(
+        """SELECT r.id, r.user_id, r.tenant_id FROM password_resets r
+             JOIN users u ON u.id = r.user_id AND u.is_active
+            WHERE r.token_hash = $1 AND r.used_at IS NULL AND r.expires_at > now()""",
+        sha256(payload.token),
+    )
+    if not row:
+        raise HTTPException(400, "That reset link is invalid or has expired. Request a new one.")
+
+    new_hash = await hash_password(payload.password)
+    await db.execute(
+        """UPDATE users SET password_hash = $2, failed_logins = 0, locked_until = NULL
+            WHERE id = $1""",
+        row["user_id"],
+        new_hash,
+    )
+    await db.execute("UPDATE password_resets SET used_at = now() WHERE id = $1", row["id"])
+    # A reset signs everyone out: whoever held the old password loses access.
+    await db.execute("DELETE FROM sessions WHERE user_id = $1", row["user_id"])
+
+    await events.log_activity(
+        row["tenant_id"],
+        "auth.password_reset",
+        object_type="user",
+        object_id=row["user_id"],
+        ip=db.to_inet(client_ip(request)),
+    )
+    return {"ok": True, "message": "Password updated. Sign in with your new password."}
 
 
 @router.post("/logout")

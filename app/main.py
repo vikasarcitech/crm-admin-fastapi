@@ -18,15 +18,37 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, events
+from . import db, events, mail, workers
 from .config import settings
-from .routers import admin, auth, intake, leads, pages
+from .routers import (
+    admin,
+    analytics,
+    auth,
+    compliance,
+    content,
+    deploy,
+    forms,
+    intake,
+    leads,
+    marketing,
+    media,
+    ops,
+    pages,
+    seo,
+    site,
+    users,
+)
 
 logging.basicConfig(
     level=logging.INFO if not settings.debug else logging.DEBUG,
     format="%(asctime)s %(levelname)s %(name)s %(message)s",
 )
 log = logging.getLogger("crm")
+
+# ENV != production turns on DEBUG, which otherwise means every Pillow
+# plugin import and asyncio selector detail lands in the app log.
+for noisy in ("PIL", "asyncio", "httpx", "httpcore", "botocore", "boto3", "urllib3"):
+    logging.getLogger(noisy).setLevel(logging.WARNING)
 
 PUBLIC_DIR = Path(__file__).resolve().parent.parent / "public"
 
@@ -58,6 +80,12 @@ async def lifespan(app: FastAPI):
         # from every replica.
         tasks.append(asyncio.create_task(events.webhook_worker()))
         tasks.append(asyncio.create_task(events.session_prune_worker()))
+        tasks.append(asyncio.create_task(mail.email_worker()))
+        # Platform workers: scheduled publishing, campaigns, build hooks
+        # and CDN invalidation, health probes, retention and backups.
+        for factory in workers.all_workers():
+            tasks.append(asyncio.create_task(factory()))
+        log.info("started %d background workers", len(tasks))
 
     try:
         yield
@@ -158,6 +186,27 @@ app.include_router(auth.router)
 app.include_router(leads.router)
 app.include_router(pages.router)
 app.include_router(pages.public_router)  # published pages, unauthenticated
+app.include_router(content.router)
+app.include_router(seo.router)
+app.include_router(seo.public_router)  # sitemap, robots, redirect lookup
+app.include_router(media.router)
+app.include_router(media.public_router)  # local media serving
+app.include_router(users.router)
+app.include_router(site.router)
+app.include_router(site.public_router)  # public site config, menus
+app.include_router(forms.router)
+app.include_router(forms.templates_router)
+app.include_router(forms.conversions_router)
+app.include_router(forms.public_router)  # conversion beacon
+app.include_router(marketing.router)
+app.include_router(marketing.public_router)  # subscribe, confirm, unsubscribe, short links
+app.include_router(analytics.router)
+app.include_router(analytics.public_router)  # page-view beacon
+app.include_router(deploy.router)
+app.include_router(deploy.public_router)  # versioned public content API
+app.include_router(ops.router)
+app.include_router(compliance.router)
+app.include_router(compliance.public_router)  # cookie/consent capture
 app.include_router(admin.router)
 
 
@@ -174,6 +223,16 @@ async def login_page() -> FileResponse:
 @app.get("/register", include_in_schema=False)
 async def register_page() -> FileResponse:
     return FileResponse(PUBLIC_DIR / "register.html")
+
+
+@app.get("/forgot", include_in_schema=False)
+async def forgot_page() -> FileResponse:
+    return FileResponse(PUBLIC_DIR / "forgot.html")
+
+
+@app.get("/reset", include_in_schema=False)
+async def reset_page() -> FileResponse:
+    return FileResponse(PUBLIC_DIR / "reset.html")
 
 
 @app.get("/{full_path:path}", include_in_schema=False)

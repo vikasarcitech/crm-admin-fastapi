@@ -4,7 +4,7 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <meta name="robots" content="noindex, nofollow">
-  <title>Leads — CRM Admin</title>
+  <title>CRM Admin</title>
   <link rel="stylesheet" href="/css/admin.css">
 </head>
 <body>
@@ -16,6 +16,10 @@
       </div>
       <nav class="nav" id="nav" aria-label="Sections"></nav>
       <div class="sidebar-foot">
+        <a href="#/operations?tab=notifications" class="notify-link">
+          Notifications
+          <span id="notify-badge" class="count hidden"></span>
+        </a>
         <strong id="user-name">—</strong>
         <span id="user-role" class="mono"></span>
         <button type="button" id="sign-out">Sign out</button>
@@ -40,8 +44,21 @@
 
   <script src="/js/api.js"></script>
   <script src="/js/ui.js"></script>
+  <!-- kit.js builds on ui.js and every feature view builds on kit.js,
+       so the order here matters: api, ui, kit, views, then the router. -->
+  <script src="/js/kit.js"></script>
   <script src="/js/views.js"></script>
   <script src="/js/pages.js"></script>
+  <script src="/js/content.js"></script>
+  <script src="/js/media.js"></script>
+  <script src="/js/seo.js"></script>
+  <script src="/js/site.js"></script>
+  <script src="/js/forms.js"></script>
+  <script src="/js/marketing.js"></script>
+  <script src="/js/insights.js"></script>
+  <script src="/js/publishing.js"></script>
+  <script src="/js/operations.js"></script>
+  <script src="/js/account.js"></script>
   <script src="/js/app.js"></script>
 </body>
 </html>

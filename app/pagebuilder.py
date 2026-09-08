@@ -283,7 +283,7 @@ def _rich(body: str) -> str:
 
     def flush_paragraph() -> None:
         if paragraph:
-            out.append("<p>" + "<br>".join(_inline(l) for l in paragraph) + "</p>")
+            out.append("<p>" + "<br>".join(_inline(line) for line in paragraph) + "</p>")
             paragraph.clear()
 
     def flush_list() -> None:

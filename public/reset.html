@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="robots" content="noindex, nofollow">
+  <title>Choose a new password — CRM Admin</title>
+  <link rel="stylesheet" href="/css/admin.css">
+</head>
+<body>
+  <div class="login-wrap">
+    <div class="login-card">
+      <h1>Choose a new password</h1>
+      <p class="lede">Signing in again everywhere is required after this.</p>
+
+      <div class="login-error hidden" id="error" role="alert"></div>
+
+      <form id="reset-form" novalidate>
+        <label class="field">
+          <span>New password (12+ characters)</span>
+          <input type="password" name="password" id="password" autocomplete="new-password"
+                 minlength="12" required>
+        </label>
+        <label class="field">
+          <span>Repeat it</span>
+          <input type="password" name="confirm" id="confirm" autocomplete="new-password"
+                 minlength="12" required>
+        </label>
+        <button class="btn btn-primary" type="submit" id="submit">Set new password</button>
+      </form>
+
+      <p class="lede" style="margin-top:16px">
+        <a href="/login">Back to sign in</a>
+      </p>
+    </div>
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/reset.js"></script>
+</body>
+</html>

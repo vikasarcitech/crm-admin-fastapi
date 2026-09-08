@@ -102,13 +102,40 @@ async def main() -> int:
                         timedelta(days=random.uniform(0, 21)),
                     )
 
+        # Content types, taxonomies, menus, email templates, default
+        # settings and retention policies. Uses the app's own pool, so
+        # it runs after the seed transaction rather than inside it.
+        summary = await _provision(tenant_id, owner_id)
+
         print(f'Seeded tenant "{TENANT_SLUG}" (id {tenant_id}). Sign in as {EMAIL}')
+        if summary:
+            print(f"  Provisioned: {summary}")
         return 0
     except asyncpg.PostgresError as exc:
         print(f"Seed failed: {exc}", file=sys.stderr)
         return 1
     finally:
         await conn.close()
+
+
+async def _provision(tenant_id: int, owner_id: int) -> dict | None:
+    """Run app.bootstrap against its own pool.
+
+    Kept separate from the seed's raw connection: bootstrap goes through
+    app.db so its jsonb codec applies, and a provisioning failure must
+    not roll back a successful seed.
+    """
+    try:
+        from app import bootstrap, db as appdb
+
+        await appdb.connect()
+        try:
+            return await bootstrap.provision_tenant(tenant_id, created_by=owner_id)
+        finally:
+            await appdb.disconnect()
+    except Exception as exc:  # noqa: BLE001 — advisory step
+        print(f"  Warning: provisioning skipped ({exc})", file=sys.stderr)
+        return None
 
 
 if __name__ == "__main__":

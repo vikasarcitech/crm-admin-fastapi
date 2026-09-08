@@ -210,3 +210,93 @@ async def session_prune_worker() -> None:
             raise
         except Exception as exc:
             log.error("prune worker error: %s", exc)
+
+
+# ===================================================================
+# Notification centre and folded error log (2.11)
+# ===================================================================
+
+# Events an admin may subscribe a webhook to. Kept as an allow-list so a
+# typo in the UI cannot create an endpoint that silently never fires.
+PLATFORM_EVENTS: frozenset[str] = frozenset(
+    {
+        "lead.created", "lead.status_changed",
+        "content.published", "content.unpublished", "content.scheduled",
+        "form.submitted", "subscriber.created", "campaign.sent",
+        "build.succeeded", "build.failed", "health.down",
+    }
+)
+
+
+async def notify(
+    tenant_id: int,
+    kind: str,
+    title: str,
+    *,
+    body: str | None = None,
+    level: str = "info",
+    link: str | None = None,
+    user_id: int | None = None,
+) -> None:
+    """Row in the notification centre. user_id=None broadcasts.
+
+    Like log_activity, this must never break its caller: a notification
+    is a courtesy, not part of the transaction that triggered it.
+    """
+    try:
+        await db.execute(
+            """INSERT INTO notifications (tenant_id, user_id, kind, level, title, body, link)
+               VALUES ($1, $2, $3, $4, $5, $6, $7)""",
+            tenant_id, user_id, kind,
+            level if level in {"info", "success", "warning", "error"} else "info",
+            title[:200], (body or None) and body[:2000], link,
+        )
+    except Exception as exc:
+        log.error("notification write failed: %s", exc)
+
+
+def fingerprint(source: str, message: str) -> str:
+    """Fold similar errors together: digits and hex ids are the parts
+    that vary between occurrences of the same bug."""
+    import re  # noqa: PLC0415
+
+    normalised = re.sub(r"0x[0-9a-f]+|\b\d+\b", "N", (message or "").lower())[:300]
+    return hashlib.sha256(f"{source}|{normalised}".encode()).hexdigest()[:32]
+
+
+async def log_error(
+    message: str,
+    *,
+    tenant_id: int | None = None,
+    level: str = "error",
+    source: str = "app",
+    detail: dict | None = None,
+    request_method: str | None = None,
+    request_path: str | None = None,
+    user_id: int | None = None,
+) -> None:
+    """Upsert into the folded error log for the admin's log viewer."""
+    try:
+        await db.execute(
+            """INSERT INTO error_log (tenant_id, level, source, message, fingerprint, detail,
+                                      request_method, request_path, user_id)
+               VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9)
+               ON CONFLICT (coalesce(tenant_id, 0), fingerprint) DO UPDATE
+                  SET count = error_log.count + 1,
+                      last_seen_at = now(),
+                      is_resolved = FALSE,
+                      detail = EXCLUDED.detail""",
+            tenant_id,
+            level if level in {"warning", "error", "critical"} else "error",
+            source[:60],
+            (message or "unknown error")[:2000],
+            fingerprint(source, message),
+            detail or {},
+            request_method,
+            (request_path or "")[:300] or None,
+            user_id,
+        )
+    except Exception as exc:
+        # Deliberately only the app log here — recursing into log_error
+        # while the database is the thing that is failing would loop.
+        log.error("error-log write failed: %s", exc)

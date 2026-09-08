@@ -587,3 +587,336 @@ dl.meta dd.mono { font-family: var(--mono); font-size: 12px; }
   font-size: 11.5px;
   color: var(--muted);
 }
+
+/* ============================================================
+   Platform screens — content, media, site, marketing, ops.
+   Reuses the existing tokens; nothing new is introduced here
+   except the components those screens actually need.
+   ============================================================ */
+
+/* --------------------------------------------------- sidebar groups */
+.nav-group {
+  padding: 14px 14px 4px;
+  font-size: 10.5px;
+  font-weight: 600;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: #6d8a90;
+}
+.nav-group:first-child { padding-top: 6px; }
+
+.sidebar-foot .notify-link {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  color: #9db3b8;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+.sidebar-foot .notify-link:hover { color: #fff; text-decoration: none; }
+.sidebar-foot .notify-link .count {
+  background: var(--brass);
+  color: #17262a;
+  font: 500 11px/1 var(--mono);
+  padding: 2px 6px;
+  border-radius: 8px;
+}
+
+/* kit.tabs marks the active tab with a class, and aria-current
+   because these tabs are links into the hash route, not a tablist. */
+.tabs button.is-current {
+  background: var(--surface);
+  border-color: var(--line);
+  color: var(--ink);
+  font-weight: 500;
+}
+.tabs .count {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  margin-left: 5px;
+}
+.tabs button.is-current .count { color: var(--accent); }
+
+/* ------------------------------------------------- generic badges */
+.pill[data-kind] { border-color: currentColor; }
+.pill[data-kind='ok'] { color: var(--s-won); background: #e6f1ea; }
+.pill[data-kind='warn'] { color: var(--brass); background: #f6efdf; }
+.pill[data-kind='off'] { color: var(--muted); background: #eceee7; }
+.pill[data-kind='neutral'] { color: var(--s-new); background: #e9eef0; }
+
+/* ---------------------------------------------------------- forms */
+.drawer-form { display: flex; flex-direction: column; gap: 14px; }
+.field { display: flex; flex-direction: column; gap: 5px; }
+.field > span { font-size: 12px; font-weight: 500; color: var(--muted); }
+.field-inline {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin: 6px 0;
+}
+.field-inline input:not([type='checkbox']),
+.field-inline select { flex: 1 1 12rem; min-width: 0; }
+
+label.check { display: flex; align-items: center; gap: 7px; font-size: 13px; }
+label.check input { margin: 0; }
+
+textarea.code,
+pre.code-block {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+}
+pre.code-block {
+  background: #1e3238;
+  color: #dfe8e6;
+  padding: 12px 14px;
+  border-radius: var(--radius);
+  overflow-x: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  margin: 0 0 10px;
+}
+
+/* Character counter for the SEO length hints. */
+.counted { display: flex; flex-direction: column; gap: 4px; }
+.count-hint {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--muted);
+  align-self: flex-end;
+}
+.count-hint[data-state='ok'] { color: var(--s-won); }
+.count-hint[data-state='short'] { color: var(--brass); }
+.count-hint[data-state='long'] { color: var(--danger); }
+
+/* SEO / health check rows. */
+.check-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 13px;
+  padding: 3px 0;
+}
+.check-dot {
+  width: 8px; height: 8px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--line);
+}
+.check-dot[data-state='ok'] { background: var(--s-won); }
+.check-dot[data-state='off'] { background: var(--line); }
+
+/* ---------------------------------------------------------- chips */
+.chips { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip-group-label {
+  width: 100%;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  margin-top: 4px;
+}
+.chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  padding: 4px 9px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  background: var(--surface);
+  cursor: pointer;
+}
+.chip:has(input:checked) { border-color: var(--accent); background: #e6f1ea; }
+.chip input { margin: 0; }
+.chip.is-static {
+  cursor: default;
+  font-family: var(--mono);
+  font-size: 11.5px;
+  color: var(--muted);
+}
+
+/* ------------------------------------------------------- bulk bar */
+.bulkbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  padding: 8px 12px;
+  margin-bottom: -1px;
+  background: #e9eef0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius) var(--radius) 0 0;
+  font-size: 13px;
+}
+
+/* ------------------------------------------------------- notices */
+.notice {
+  padding: 10px 13px;
+  border-radius: var(--radius);
+  border: 1px solid var(--line);
+  background: var(--surface);
+  font-size: 13px;
+  margin-bottom: 12px;
+  border-left-width: 3px;
+}
+.notice[data-kind='info'] { border-left-color: var(--s-contacted); }
+.notice[data-kind='warn'] { border-left-color: var(--brass); background: #fdfaf2; }
+.notice[data-kind='error'] { border-left-color: var(--danger); background: #fdf5f3; }
+
+/* Destructive buttons ask twice; the armed state has to look different. */
+.btn[data-armed] {
+  background: var(--danger);
+  border-color: var(--danger);
+  color: #fff;
+}
+
+/* --------------------------------------------------- media library */
+.media-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
+  gap: 10px;
+  padding: 12px;
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.media-tile {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  cursor: pointer;
+  text-align: left;
+  overflow: hidden;
+  font: inherit;
+}
+.media-tile:hover { border-color: var(--accent); }
+.media-thumb {
+  aspect-ratio: 4 / 3;
+  background: #eceee7;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+}
+.media-thumb img { width: 100%; height: 100%; object-fit: cover; }
+.media-icon {
+  font: 500 12px/1 var(--mono);
+  color: var(--muted);
+  letter-spacing: .06em;
+}
+.media-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 0 8px 8px;
+  min-width: 0;
+}
+.media-meta .cell-name,
+.media-meta .cell-meta {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.media-flag {
+  position: absolute;
+  top: 6px; right: 6px;
+  font-size: 10.5px;
+  padding: 2px 6px;
+  border-radius: 8px;
+  background: var(--brass);
+  color: #17262a;
+}
+.media-preview {
+  max-width: 100%;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+}
+.avatar-preview {
+  width: 64px; height: 64px;
+  border-radius: 50%;
+  object-fit: cover;
+  border: 1px solid var(--line);
+}
+
+.dropzone {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 4px;
+  padding: 22px;
+  margin-bottom: 12px;
+  border: 1px dashed var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  text-align: center;
+  font-size: 13px;
+}
+.dropzone[data-active] { border-color: var(--accent); background: #e6f1ea; }
+
+/* ----------------------------------------- menu / field builders */
+.menu-builder, .field-builder {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+.menu-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.menu-row-main { display: flex; flex-direction: column; gap: 1px; min-width: 0; flex: 1; }
+.menu-row-main .cell-meta { word-break: break-all; }
+
+/* -------------------------------------------- permission matrix */
+.matrix-scroll { overflow-x: auto; }
+table.list.matrix th { position: sticky; top: 0; z-index: 1; }
+table.list.matrix td { padding: 6px 10px; }
+table.list.matrix code { font-size: 11.5px; }
+.matrix-group td {
+  background: #f0f1ec;
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .06em;
+  text-transform: uppercase;
+  color: var(--muted);
+}
+.matrix-cell { text-align: center; }
+/* A cell the workspace has overridden should not look like a default. */
+.matrix-cell[data-overridden='1'] { background: #f6efdf; }
+
+/* -------------------------------------------------- misc helpers */
+ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
+.kv { display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.kv code { color: var(--muted); }
+
+/* Two-series bars for the analytics ledger. */
+.ledger-stack {
+  flex: 1;
+  display: flex;
+  align-items: flex-end;
+  gap: 1px;
+  height: 100%;
+}
+.ledger-stack .ledger-bar { flex: 1; }
+.ledger-bar.is-leads { background: var(--accent); }
+
+.count-hint, .cell-mono { font-variant-numeric: tabular-nums; }
+
+/* Stacked drawers: each layer sits above the one it opened from, and
+   the layer beneath is dimmed rather than removed. */
+.drawer[data-depth='1'] { box-shadow: -12px 0 28px rgba(23, 38, 42, .18); }
+.drawer[data-depth='2'] { box-shadow: -12px 0 28px rgba(23, 38, 42, .22); }

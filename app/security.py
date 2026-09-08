@@ -25,7 +25,21 @@ log = logging.getLogger("crm.auth")
 
 COOKIE = "crm_session"
 SAFE_METHODS = {"GET", "HEAD", "OPTIONS"}
-ROLE_RANK = {"viewer": 1, "agent": 2, "admin": 3, "owner": 4}
+# Coarse ordering for the original require_role() gates. Named
+# permissions (app/permissions.py) are what new code should check;
+# these ranks only keep the pre-existing owner/admin/agent/viewer
+# guards behaving exactly as before while the newer roles slot in
+# below 'admin' so an Editor cannot pass require_role("admin").
+ROLE_RANK = {
+    "viewer": 1,
+    "contributor": 1,
+    "agent": 2,
+    "author": 2,
+    "editor": 3,
+    "admin": 4,
+    "owner": 5,
+    "super_admin": 6,
+}
 
 # bcrypt silently ignores bytes past 72; reject rather than truncate so a
 # long passphrase can't be matched by its own prefix.
@@ -135,6 +149,9 @@ async def destroy_session(request: Request, response: Response) -> None:
 async def prune_sessions() -> None:
     try:
         await db.execute("DELETE FROM sessions WHERE expires_at < now()")
+        await db.execute(
+            "DELETE FROM password_resets WHERE expires_at < now() - interval '1 day'"
+        )
     except Exception as exc:  # housekeeping must never take the app down
         log.error("session prune failed: %s", exc)
 

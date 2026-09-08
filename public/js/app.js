@@ -1,22 +1,98 @@
-/* global window, document, api, ui, views */
+/* global window, document, api, ui, views, contentViews, mediaViews,
+   seoViews, siteViews, formsViews, marketingViews, insightsViews,
+   publishingViews, operationsViews, accountViews */
 /** Bootstrap + hash router. */
 (function () {
   'use strict';
 
-  const { h, mount, toast, closeDrawer } = ui;
+  const { h, mount, toast, closeDrawer, closeAllDrawers } = ui;
 
+  // Grouped so the sidebar reads as sections rather than one long list.
+  // `perm` hides an entry the account cannot use — the API enforces the
+  // same permission, so hiding it is a convenience, not the control.
   const ROUTES = [
-    { path: 'dashboard', label: 'Dashboard', view: 'dashboard', icon: 'M3 12h4l2 5 3-11 2 6h5' },
-    { path: 'leads', label: 'Leads', view: 'leads', icon: 'M4 5h16M4 12h16M4 19h10', countKey: 'all' },
-    { path: 'pages', label: 'Pages', view: 'pages', icon: 'M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6' },
-    { path: 'users', label: 'Users', view: 'users', icon: 'M4 19a5 5 0 0110 0M9 4a3 3 0 100 6 3 3 0 000-6' },
-    { path: 'webhooks', label: 'Webhooks', view: 'webhooks', icon: 'M6 8a4 4 0 106 3M12 20a4 4 0 10-2-7' },
-    { path: 'activity', label: 'Activity', view: 'activity', icon: 'M12 6v6l4 2M12 3a9 9 0 100 18 9 9 0 000-18' },
-    { path: 'settings', label: 'Settings', view: 'settings', icon: 'M12 9a3 3 0 100 6 3 3 0 000-6M4 12h2m12 0h2M12 4v2m0 12v2' },
+    { path: 'dashboard', label: 'Dashboard', view: 'dashboard', group: 'Overview',
+      icon: 'M3 12h4l2 5 3-11 2 6h5' },
+    { path: 'insights', label: 'Analytics', view: 'insights', group: 'Overview',
+      perm: 'analytics.view',
+      icon: 'M4 20V10m5 10V4m5 16v-7m5 7V8' },
+
+    { path: 'content', label: 'Content', view: 'content', group: 'Content',
+      perm: 'content.view',
+      icon: 'M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6' },
+    { path: 'taxonomy', label: 'Categories & tags', view: 'taxonomy', group: 'Content',
+      perm: 'content.view',
+      icon: 'M4 7h16M4 12h10M4 17h6' },
+    { path: 'media', label: 'Media', view: 'media', group: 'Content',
+      perm: 'media.view',
+      icon: 'M4 5h16v14H4zM8 11a2 2 0 100-4 2 2 0 000 4M4 16l5-4 4 3 3-2 4 3' },
+    { path: 'pages', label: 'Page builder', view: 'pages', group: 'Content',
+      icon: 'M4 5h16v4H4zM4 12h7v7H4zM14 12h6v7h-6z' },
+
+    { path: 'leads', label: 'Leads', view: 'leads', group: 'Pipeline',
+      countKey: 'all', perm: 'leads.view',
+      icon: 'M4 5h16M4 12h16M4 19h10' },
+    { path: 'forms', label: 'Forms', view: 'forms', group: 'Pipeline',
+      perm: 'forms.manage',
+      icon: 'M5 3h14v18H5zM9 8h6M9 12h6M9 16h3' },
+    { path: 'marketing', label: 'Marketing', view: 'marketing', group: 'Pipeline',
+      perm: 'marketing.view',
+      icon: 'M4 9v6l12 4V5zM18 10a3 3 0 010 4' },
+
+    { path: 'seo', label: 'SEO', view: 'seo', group: 'Site',
+      perm: 'seo.manage',
+      icon: 'M11 4a7 7 0 100 14 7 7 0 000-14M20 20l-4-4' },
+    { path: 'site', label: 'Site settings', view: 'site', group: 'Site',
+      icon: 'M12 9a3 3 0 100 6 3 3 0 000-6M4 12h2m12 0h2M12 4v2m0 12v2' },
+    { path: 'publishing', label: 'Publishing', view: 'publishing', group: 'Site',
+      perm: 'deploy.trigger',
+      icon: 'M12 19V5m0 0l-5 5m5-5l5 5M5 21h14' },
+
+    { path: 'users', label: 'Users', view: 'users', group: 'Admin',
+      perm: 'users.view',
+      icon: 'M4 19a5 5 0 0110 0M9 4a3 3 0 100 6 3 3 0 000-6' },
+    { path: 'account', label: 'Account & roles', view: 'account', group: 'Admin',
+      icon: 'M12 12a4 4 0 100-8 4 4 0 000 8M5 21a7 7 0 0114 0' },
+    { path: 'operations', label: 'Operations', view: 'operations', group: 'Admin',
+      perm: 'ops.view',
+      icon: 'M12 8v4l3 2M4 12a8 8 0 1016 0 8 8 0 00-16 0' },
+    { path: 'webhooks', label: 'Webhooks', view: 'webhooks', group: 'Admin',
+      perm: 'webhooks.manage',
+      icon: 'M6 8a4 4 0 106 3M12 20a4 4 0 10-2-7' },
+    { path: 'activity', label: 'Activity', view: 'activity', group: 'Admin',
+      icon: 'M12 6v6l4 2M12 3a9 9 0 100 18 9 9 0 000-18' },
+    { path: 'settings', label: 'Lead settings', view: 'settings', group: 'Admin',
+      icon: 'M4 6h16M4 12h16M4 18h16' },
   ];
 
-  const session = { user: null, counts: {} };
+  const session = { user: null, counts: {}, permissions: null, unread: 0 };
   let current = { path: 'dashboard', params: {} };
+
+  /** Every view module, merged into one lookup for the router. */
+  function allViews() {
+    return {
+      ...window.views,
+      ...(window.contentViews || {}),
+      ...(window.mediaViews || {}),
+      ...(window.seoViews || {}),
+      ...(window.siteViews || {}),
+      ...(window.formsViews || {}),
+      ...(window.marketingViews || {}),
+      ...(window.insightsViews || {}),
+      ...(window.publishingViews || {}),
+      ...(window.operationsViews || {}),
+      ...(window.accountViews || {}),
+    };
+  }
+
+  /** Routes this account can actually open. */
+  function visibleRoutes() {
+    const granted = session.permissions;
+    // Before /api/profile answers, show everything rather than flashing
+    // an empty sidebar; the API is the real gate either way.
+    if (!granted) return ROUTES;
+    return ROUTES.filter((r) => !r.perm || granted.includes(r.perm));
+  }
 
   // -------------------------------------------------------------- route
   function parseHash() {
@@ -39,9 +115,17 @@
 
   function renderNav() {
     const nav = document.getElementById('nav');
-    mount(nav, ROUTES.map((r) => {
+    const routes = visibleRoutes();
+    const nodes = [];
+    let group = null;
+
+    routes.forEach((r) => {
+      if (r.group !== group) {
+        group = r.group;
+        nodes.push(h('div.nav-group', { text: group }));
+      }
       const count = r.countKey ? session.counts[r.countKey] : null;
-      const link = h('a', {
+      nodes.push(h('a', {
         href: `#/${r.path}`,
         class: current.path === r.path ? 'is-current' : '',
         'aria-current': current.path === r.path ? 'page' : null,
@@ -54,34 +138,44 @@
         }),
         r.label,
         count ? h('span.count', { text: String(count) }) : null,
-      ]);
-      return link;
-    }));
+      ]));
+    });
+    mount(nav, nodes);
   }
 
   async function render() {
     current = parseHash();
     renderNav();
-    closeDrawer();
+    closeAllDrawers();
 
     const el = document.getElementById('view');
     const route = ROUTES.find((r) => r.path === current.path);
     const ctx = {
       el,
+      // Views build their own hash links from this, so a tab or a pager
+      // does not have to know which route it is inside.
+      path: current.path,
       params: current.params,
       session,
       setHead,
       navigate,
       /** Re-run the current view (after a save). */
       reload: (opts = {}) => {
-        if (!opts.keepDrawer) closeDrawer();
+        if (!opts.keepDrawer) closeAllDrawers();
         render();
       },
     };
 
     try {
-      await views[route.view](ctx);
+      const view = allViews()[route.view];
+      if (!view) throw new Error(`No view registered for “${route.view}”.`);
+      await view(ctx);
     } catch (err) {
+      if (err.status === 403) {
+        mount(el, ui.emptyState('You do not have access to this',
+          err.message || 'Ask an owner or admin for the permission.'));
+        return;
+      }
       if (err.message === 'Session expired') return;
       mount(el, ui.emptyState('This screen could not load', err.message,
         h('button.btn', { type: 'button', text: 'Try again', onclick: () => render() })));
@@ -114,8 +208,43 @@
       .then((counts) => { session.counts = counts; renderNav(); })
       .catch(() => {});
 
+    // Permissions decide which sidebar entries are worth showing. The
+    // API enforces them regardless, so a slow or failed load only means
+    // the sidebar shows more than it needs to.
+    api.get('/api/profile')
+      .then(({ profile }) => {
+        session.permissions = profile.permissions || [];
+        session.profile = profile;
+        renderNav();
+      })
+      .catch(() => {});
+
+    startNotificationBadge();
+
     window.addEventListener('hashchange', render);
     render();
+  }
+
+  /**
+   * Unread count in the sidebar. Polled rather than pushed: this admin
+   * has no websocket, and a 60-second poll is cheap next to adding one.
+   */
+  function startNotificationBadge() {
+    const paint = async () => {
+      try {
+        const { unread } = await api.get('/api/ops/notifications?unread_only=true&limit=10');
+        session.unread = unread;
+        const host = document.getElementById('notify-badge');
+        if (!host) return;
+        host.textContent = unread ? String(unread) : '';
+        host.classList.toggle('hidden', !unread);
+      } catch (err) {
+        // A role without ops.view gets a 403 here; stop asking.
+        if (err.status === 403) clearInterval(timer);
+      }
+    };
+    const timer = setInterval(paint, 60000);
+    paint();
   }
 
   boot();

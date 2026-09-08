@@ -187,6 +187,39 @@ CREATE TABLE IF NOT EXISTS webhook_deliveries (
 CREATE INDEX IF NOT EXISTS deliveries_due_idx ON webhook_deliveries (status, next_attempt_at)
   WHERE status = 'pending';
 
+-- --------------------------------------------------------- email outbox
+-- Outbound email as rows, like webhook_deliveries: a crash mid-send
+-- leaves a pending row the worker retries. Reuses delivery_status.
+CREATE TABLE IF NOT EXISTS email_outbox (
+  id              BIGSERIAL PRIMARY KEY,
+  tenant_id       BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  to_email        CITEXT NOT NULL,
+  subject         TEXT NOT NULL,
+  body            TEXT NOT NULL,                -- plain text
+  kind            TEXT NOT NULL DEFAULT 'generic',  -- 'lead.notification', 'auth.reset'
+  status          delivery_status NOT NULL DEFAULT 'pending',
+  attempts        INT NOT NULL DEFAULT 0,
+  next_attempt_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+  last_error      TEXT,
+  sent_at         TIMESTAMPTZ,
+  created_at      TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS email_due_idx ON email_outbox (status, next_attempt_at)
+  WHERE status = 'pending';
+
+-- ------------------------------------------------------ password resets
+-- Single-use tokens; only the SHA-256 is stored, like session tokens.
+CREATE TABLE IF NOT EXISTS password_resets (
+  id         BIGSERIAL PRIMARY KEY,
+  token_hash TEXT NOT NULL UNIQUE,
+  user_id    BIGINT NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  tenant_id  BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
+  expires_at TIMESTAMPTZ NOT NULL,
+  used_at    TIMESTAMPTZ,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS password_resets_expiry_idx ON password_resets (expires_at);
+
 -- ------------------------------------------------------------ settings
 CREATE TABLE IF NOT EXISTS settings (
   tenant_id  BIGINT NOT NULL REFERENCES tenants(id) ON DELETE CASCADE,
