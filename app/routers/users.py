@@ -181,7 +181,7 @@ async def change_password(
 ) -> dict:
     """Requires the current password, and ends every other session."""
     ip = client_ip(request)
-    login_limiter.check(f"pw:{ip or 'unknown'}")
+    await login_limiter.check(f"pw:{ip or 'unknown'}")
 
     verified = await verify_credentials(user.tenant_id, user.email, payload.current_password)
     if not verified:
@@ -322,7 +322,7 @@ async def disable_totp(
     request: Request,
     user: CurrentUser = Depends(require_user),
 ) -> dict:
-    login_limiter.check(f"2fa-off:{client_ip(request) or 'unknown'}")
+    await login_limiter.check(f"2fa-off:{client_ip(request) or 'unknown'}")
     if not await verify_credentials(user.tenant_id, user.email, payload.password):
         raise HTTPException(400, "That password is not right.")
 
@@ -379,7 +379,7 @@ async def complete_totp_login(
 ) -> dict:
     """Second step: exchange a challenge plus a code for a real session."""
     ip = client_ip(request)
-    login_limiter.check(f"2fa:{ip or 'unknown'}")
+    await login_limiter.check(f"2fa:{ip or 'unknown'}")
 
     row = await db.fetch_one(
         """SELECT c.id, c.user_id, c.tenant_id, c.attempts,

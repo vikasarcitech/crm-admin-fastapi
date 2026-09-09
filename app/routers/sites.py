@@ -34,6 +34,16 @@ log = logging.getLogger("crm.sites")
 
 router = APIRouter(prefix="/api/platform", tags=["platform"])
 
+# Tables that hold no tenant data and so carry no tenant_id. Listed
+# explicitly with the reason, so a table that is genuinely missing its
+# scope is still reported as a finding.
+NOT_TENANT_SCOPED: dict[str, str] = {
+    "tenants": "the control plane's own record; gated by sites.manage",
+    "rate_limits": "keyed by client IP for public endpoints, which is not "
+                   "a per-tenant subject",
+}
+
+
 # Infra keys a site may override. An allow-list, so a compromised
 # super-admin session cannot invent configuration the app then trusts.
 INFRA_KEYS = frozenset(
@@ -214,7 +224,7 @@ async def update_site(
         "notes" in sent, collapse(payload.notes, 1000),
         "infra" in sent, infra,
     )
-    tenancy.invalidate(tenant["slug"])
+    await tenancy.invalidate_everywhere(tenant["slug"])
     await tenancy.log_event(
         tenant_id=tenant["id"], tenant_slug=tenant["slug"], action="updated",
         actor_id=user.id, actor_email=user.email, detail={"fields": list(sent)},
@@ -453,14 +463,18 @@ async def isolation_report(
     defence-in-depth the schema is set up for.
     """
     rls = await db.rls_status(refresh=True)
-    unscoped = await db.fetch_one(
-        """SELECT count(*)::int AS n FROM information_schema.tables t
-            WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
-              AND t.table_name <> 'tenants'
-              AND NOT EXISTS (SELECT 1 FROM information_schema.columns c
-                               WHERE c.table_schema = 'public'
-                                 AND c.table_name = t.table_name
-                                 AND c.column_name = 'tenant_id')"""
+    # Named, not pattern-matched: a table that is genuinely missing its
+    # tenant_id must still show up here, so the exemptions are listed
+    # one by one with the reason.
+    unscoped = await db.fetch(
+        """SELECT t.table_name FROM information_schema.tables t
+             WHERE t.table_schema = 'public' AND t.table_type = 'BASE TABLE'
+               AND t.table_name <> ALL($1::text[])
+               AND NOT EXISTS (SELECT 1 FROM information_schema.columns c
+                                WHERE c.table_schema = 'public'
+                                  AND c.table_name = t.table_name
+                                  AND c.column_name = 'tenant_id')""",
+        list(NOT_TENANT_SCOPED),
     )
     return {
         "authentication": {
@@ -483,7 +497,11 @@ async def isolation_report(
         },
         "data": {
             **rls,
-            "tablesWithoutTenantId": unscoped["n"],
+            # Anything here is a table that should carry tenant_id and
+            # does not — a real finding, not a known exemption.
+            "tablesWithoutTenantId": len(unscoped),
+            "unscopedTables": [row["table_name"] for row in unscoped],
+            "knownUnscoped": NOT_TENANT_SCOPED,
             "note": "TenantDB binds $1 unconditionally; RLS is the backstop and "
                     "needs a non-superuser role to bite.",
         },
@@ -666,3 +684,196 @@ async def revoke_membership(
         ip=db.to_inet(client_ip(request)),
     )
     return {"ok": True, "sessionsEnded": len(ended)}
+
+
+# ===================================================================
+# Scale and capacity
+# ===================================================================
+@router.get("/scale")
+async def scale_report(
+    user: CurrentUser = Depends(require_perm("sites.manage")),
+) -> dict:
+    """Where the platform is against the things that break first.
+
+    Growth does not fail evenly: the queues back up before the database
+    does, one tenant outgrows the rest long before the portfolio does,
+    and a worker nobody is running looks exactly like a worker with
+    nothing to do. This is the screen that separates those.
+    """
+    from .. import cache, ratelimit, versioning, workers  # noqa: PLC0415
+
+    sizes = await db.fetch(
+        """SELECT c.relname AS table_name,
+                  pg_total_relation_size(c.oid) AS total_bytes,
+                  pg_relation_size(c.oid) AS heap_bytes,
+                  c.reltuples::bigint AS approx_rows
+             FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace
+            WHERE n.nspname = 'public' AND c.relkind = 'r'
+            ORDER BY pg_total_relation_size(c.oid) DESC
+            LIMIT 15""",
+        replica=True,
+    )
+
+    queues = await db.fetch_one(
+        """SELECT
+             (SELECT count(*) FROM email_outbox WHERE status='pending')::int AS email,
+             (SELECT count(*) FROM email_outbox WHERE status='dead')::int AS email_dead,
+             (SELECT count(*) FROM webhook_deliveries WHERE status='pending')::int AS webhooks,
+             (SELECT count(*) FROM connector_deliveries WHERE status='pending')::int AS connectors,
+             (SELECT count(*) FROM connector_deliveries WHERE status='dead')::int AS connectors_dead,
+             (SELECT count(*) FROM media_jobs WHERE status='pending')::int AS media,
+             (SELECT count(*) FROM media_jobs WHERE status='failed')::int AS media_failed,
+             (SELECT count(*) FROM build_runs WHERE status='pending')::int AS builds,
+             (SELECT count(*) FROM content_items WHERE status='scheduled')::int AS scheduled,
+             -- The number that matters: how long has the oldest thing
+             -- been waiting? A depth of 400 that drains in a second is
+             -- healthy; a depth of 3 stuck for an hour is not.
+             (SELECT extract(epoch FROM now() - min(created_at))::int
+                FROM connector_deliveries WHERE status='pending') AS connector_oldest_s,
+             (SELECT extract(epoch FROM now() - min(created_at))::int
+                FROM media_jobs WHERE status='pending') AS media_oldest_s,
+             (SELECT extract(epoch FROM now() - min(created_at))::int
+                FROM email_outbox WHERE status='pending') AS email_oldest_s"""
+    )
+
+    # Which tenants are outliers — the candidates for their own
+    # infrastructure long before the platform as a whole struggles.
+    heaviest = await db.fetch(
+        """SELECT t.slug::text AS slug, t.name, t.plan,
+                  u.leads_total, u.leads_30d, u.content_items,
+                  u.media_bytes, u.page_views_30d,
+                  (t.infra ? 'media_s3_bucket') AS own_bucket
+             FROM tenants t JOIN tenant_usage u ON u.tenant_id = t.id
+            WHERE t.status = 'active'
+            ORDER BY (coalesce(u.leads_30d,0) * 10
+                      + coalesce(u.content_items,0)
+                      + coalesce(u.page_views_30d,0) / 100) DESC
+            LIMIT 10""",
+        replica=True,
+    )
+
+    totals = await db.fetch_one(
+        """SELECT count(*)::int AS sites,
+                  count(*) FILTER (WHERE status='active')::int AS active
+             FROM tenants""",
+        replica=True,
+    )
+    connections = await db.fetch_one(
+        """SELECT count(*)::int AS used,
+                  current_setting('max_connections')::int AS maximum
+             FROM pg_stat_activity WHERE datname = current_database()"""
+    )
+
+    database_bytes = sum(int(row["total_bytes"]) for row in sizes)
+    return {
+        "portfolio": {
+            **dict(totals or {}),
+            # The requirement's stated horizon, so the screen can say
+            # how much of it is used rather than just a raw count.
+            "target": 100,
+            "headroomToTarget": max(0, 100 - int((totals or {}).get("active", 0))),
+        },
+        "database": {
+            "topTables": sizes,
+            "totalBytesTopTables": database_bytes,
+            "connections": connections,
+            "readReplicas": db.replica_count(),
+            "rowLevelSecurity": (await db.rls_status())["effective"],
+        },
+        "queues": queues,
+        "heaviestTenants": heaviest,
+        "workers": workers.describe_workers(),
+        "rateLimiting": ratelimit.describe(),
+        "cacheInvalidation": cache.status(),
+        "api": versioning.status(),
+        "apiVersionUsage": await versioning.usage(30),
+        "advice": _scale_advice(queues, connections, totals, heaviest),
+    }
+
+
+def _scale_advice(queues: dict, connections: dict, totals: dict, heaviest: list) -> list[dict]:
+    """Concrete next steps, only when the numbers justify them.
+
+    Advice nobody needs yet is noise, and noise is why nobody reads the
+    screen when it finally matters.
+    """
+    from .. import ratelimit, workers  # noqa: PLC0415
+
+    out: list[dict] = []
+    queues = queues or {}
+
+    running = set(workers.describe_workers()["running"])
+    missing = set(workers.WORKERS) - running
+    if missing and not running:
+        out.append({
+            "level": "warning",
+            "text": "This process runs no workers. Something else must, or "
+                    "scheduled content, email, builds and image processing all "
+                    "stop silently.",
+        })
+
+    limiter = ratelimit.describe()
+    if not limiter["shared"]:
+        out.append({
+            "level": "warning",
+            "text": "Rate limits are per-process. Behind more than one worker or "
+                    "task the effective limit is multiplied — set "
+                    "RATE_LIMIT_BACKEND=postgres.",
+        })
+
+    for key, label, threshold in (
+        ("media_oldest_s", "image processing", 300),
+        ("connector_oldest_s", "CRM and automation delivery", 600),
+        ("email_oldest_s", "outbound email", 600),
+    ):
+        waited = queues.get(key)
+        if waited and waited > threshold:
+            out.append({
+                "level": "warning",
+                "text": f"The oldest {label} job has waited "
+                        f"{int(waited // 60)} minutes. Either no worker is "
+                        f"draining that queue, or it needs its own service.",
+            })
+
+    if queues.get("media", 0) > 50:
+        out.append({
+            "level": "info",
+            "text": f"{queues['media']} images waiting. Image encoding is the only "
+                    "CPU-bound worker — run WORKERS=media on its own task.",
+        })
+
+    used = (connections or {}).get("used", 0)
+    maximum = (connections or {}).get("maximum", 100) or 100
+    if used > maximum * 0.7:
+        out.append({
+            "level": "warning",
+            "text": f"{used} of {maximum} database connections in use. Add "
+                    "PgBouncer in transaction mode before adding replicas — the "
+                    "scoped queries are transaction-safe, so it is compatible.",
+        })
+
+    if db.replica_count() == 0 and (totals or {}).get("active", 0) > 50:
+        out.append({
+            "level": "info",
+            "text": "Past 50 sites, the reporting reads (portfolio, analytics) are "
+                    "worth moving to a read replica — set DATABASE_REPLICA_URLS.",
+        })
+
+    if heaviest:
+        top = heaviest[0]
+        rest = heaviest[1:]
+        if rest:
+            average = sum(int(t.get("leads_30d") or 0) for t in rest) / len(rest)
+            mine = int(top.get("leads_30d") or 0)
+            if average and mine > average * 10 and not top.get("own_bucket"):
+                out.append({
+                    "level": "info",
+                    "text": f"“{top['name']}” is taking {mine / max(average, 1):.0f}× "
+                            "the average site's lead volume. Give it its own bucket "
+                            "and CDN via its infra settings before it affects the "
+                            "others.",
+                })
+
+    if not out:
+        out.append({"level": "ok", "text": "Nothing needs attention at this volume."})
+    return out

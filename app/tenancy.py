@@ -108,7 +108,7 @@ _by_host: dict[str, tuple[float, dict | None]] = {}
 
 
 def invalidate(slug: str | None = None) -> None:
-    """Drop cached resolutions. Called on every lifecycle change."""
+    """Drop this process's cached resolutions."""
     if slug:
         _by_slug.pop(slug.lower(), None)
     else:
@@ -116,6 +116,23 @@ def invalidate(slug: str | None = None) -> None:
     # A domain move changes which tenant a host maps to, and the host
     # cache has no way to know which entries were affected.
     _by_host.clear()
+
+
+async def invalidate_everywhere(slug: str | None = None) -> None:
+    """Drop it here and on every replica.
+
+    Suspending a site is the case that matters: with per-process TTLs
+    a suspended site keeps serving from other replicas for up to
+    30 seconds after the admin says it stopped.
+    """
+    invalidate(slug)
+    from . import cache  # noqa: PLC0415
+
+    await cache.invalidate_tenant(slug)
+
+
+def _on_invalidate(message: dict) -> None:
+    invalidate(message.get("slug"))
 
 
 def normalise_host(raw: str | None) -> str | None:
@@ -195,7 +212,9 @@ async def by_host(host: str | None, *, cached: bool = True) -> dict | None:
     return row
 
 
-async def resolve_public(slug: str | None, host: str | None = None) -> dict:
+async def resolve_public(
+    slug: str | None, host: str | None = None, request: Any = None
+) -> dict:
     """The resolver every public endpoint uses.
 
     An explicit slug wins; otherwise the Host header decides. Raises
@@ -212,6 +231,14 @@ async def resolve_public(slug: str | None, host: str | None = None) -> dict:
         raise HTTPException(404, "Unknown site.")
     if tenant["status"] != "active":
         raise TenantSuspended(tenant["name"], tenant.get("suspended_reason"))
+
+    # So the API-version middleware can attribute the call to a site
+    # without resolving the tenant a second time.
+    if request is not None:
+        try:
+            request.state.tenant_id = tenant["id"]
+        except Exception:
+            pass
     return tenant
 
 
@@ -782,7 +809,7 @@ async def set_status(
         )
         ended = len(gone)
 
-    invalidate(row["slug"])
+    await invalidate_everywhere(row["slug"])
     await log_event(
         tenant_id=tenant_id, tenant_slug=row["slug"], action=status,
         actor_id=actor_id, actor_email=actor_email,
@@ -837,7 +864,7 @@ async def delete_site(
 
     storage.delete_many(keys)
     await db.execute("DELETE FROM tenants WHERE id = $1", tenant_id)
-    invalidate(tenant["slug"])
+    await invalidate_everywhere(tenant["slug"])
 
     await log_event(
         tenant_id=None, tenant_slug=tenant["slug"], action="deleted",
@@ -859,6 +886,8 @@ async def list_sites(*, include_archived: bool = False, q: str | None = None) ->
     Reads tenant_usage rather than counting live, so this stays one
     indexed join whether there are ten sites or three hundred.
     """
+    # replica: the portfolio is a dashboard over a roll-up that is
+    # already up to an hour old, so replication lag changes nothing.
     return await db.fetch(
         f"""SELECT {TENANT_COLUMNS},
                    u.users, u.content_items, u.media_files, u.media_bytes,
@@ -879,6 +908,7 @@ async def list_sites(*, include_archived: bool = False, q: str | None = None) ->
                                   AND d.domain::text ILIKE '%' || $2 || '%'))
              ORDER BY t.status, t.name""",
         include_archived, collapse(q, 120),
+        replica=True,
     )
 
 
@@ -891,3 +921,12 @@ async def refresh_all_usage() -> int:
         except Exception as exc:
             log.error("usage refresh failed for tenant %s: %s", tenant["id"], exc)
     return len(tenants)
+
+
+def _register() -> None:
+    from . import cache  # noqa: PLC0415
+
+    cache.subscribe("tenant", _on_invalidate)
+
+
+_register()

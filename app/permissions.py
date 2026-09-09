@@ -142,7 +142,29 @@ async def _overrides(tenant_id: int) -> dict[tuple[str, str], bool]:
 
 
 def invalidate(tenant_id: int) -> None:
+    """Drop this process's copy."""
     _cache.pop(tenant_id, None)
+
+
+async def invalidate_everywhere(tenant_id: int) -> None:
+    """Drop it here and on every other replica.
+
+    A permission change that takes effect on one task and not the
+    others for another 30 seconds is the kind of inconsistency that is
+    very hard to reproduce from a bug report.
+    """
+    invalidate(tenant_id)
+    from . import cache  # noqa: PLC0415 — avoids a cycle at import
+
+    await cache.invalidate_permissions(tenant_id)
+
+
+def _on_invalidate(message: dict) -> None:
+    tenant_id = message.get("tenant_id")
+    if tenant_id:
+        _cache.pop(int(tenant_id), None)
+    else:
+        _cache.clear()
 
 
 async def permissions_for(tenant_id: int, role: str) -> set[str]:
@@ -237,3 +259,14 @@ def _phrase(permission: str) -> str:
     """'content.publish' → 'publish content' for a readable 403."""
     subject, _, verb = permission.partition(".")
     return f"{_VERBS.get(verb, verb.replace('_', ' '))} {subject.replace('_', ' ')}"
+
+
+# Registered at import so every process drops its copy when any of them
+# changes a permission.
+def _register() -> None:
+    from . import cache  # noqa: PLC0415
+
+    cache.subscribe("permissions", _on_invalidate)
+
+
+_register()

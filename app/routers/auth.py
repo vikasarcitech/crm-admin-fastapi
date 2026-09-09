@@ -59,7 +59,7 @@ async def _resolve_tenant(request: Request, slug: str | None) -> dict | None:
 async def login(payload: LoginRequest, request: Request, response: Response) -> dict:
     # Per-IP budget. Per-account lockout is separate, so a distributed
     # attack still trips the account gate.
-    login_limiter.check(client_ip(request) or "unknown")
+    await login_limiter.check(client_ip(request) or "unknown")
 
     tenant = await _resolve_tenant(request, payload.tenant)
     # One generic message whether the workspace, the email or the password
@@ -131,7 +131,7 @@ async def register(payload: RegisterRequest, request: Request, response: Respons
     """
     if not settings.allow_signups:
         raise HTTPException(403, "Sign-ups are disabled on this install. Ask an admin for an invite.")
-    signup_limiter.check(client_ip(request) or "unknown")
+    await signup_limiter.check(client_ip(request) or "unknown")
 
     workspace = collapse(payload.workspace, 60)
     if not workspace:
@@ -216,7 +216,7 @@ RESET_TOKEN_MINUTES = 30
 @router.post("/forgot")
 async def forgot_password(payload: ForgotRequest, request: Request) -> dict:
     """Send a reset link. The response never reveals whether the account exists."""
-    reset_limiter.check(client_ip(request) or "unknown")
+    await reset_limiter.check(client_ip(request) or "unknown")
     generic = {"ok": True, "message": "If that account exists, a reset link is on its way."}
 
     tenant = await _resolve_tenant(request, payload.tenant)
@@ -257,7 +257,7 @@ async def forgot_password(payload: ForgotRequest, request: Request) -> dict:
 
 @router.post("/reset")
 async def reset_password(payload: ResetRequest, request: Request) -> dict:
-    reset_limiter.check(client_ip(request) or "unknown")
+    await reset_limiter.check(client_ip(request) or "unknown")
 
     row = await db.fetch_one(
         """SELECT r.id, r.user_id, r.tenant_id FROM password_resets r

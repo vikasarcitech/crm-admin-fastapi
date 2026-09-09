@@ -34,7 +34,7 @@ router = APIRouter(prefix="/api/analytics", tags=["analytics"])
 public_router = APIRouter(tags=["analytics-public"])
 
 # One beacon per page view; a normal session is a handful of these.
-beacon_limiter = RateLimiter(max_requests=120, window_seconds=600)
+beacon_limiter = RateLimiter(max_requests=120, window_seconds=600, name="beacon")
 
 MAX_PATH = 300
 
@@ -73,10 +73,10 @@ async def collect(
     """
     empty = Response(status_code=204)
     ip = client_ip(request)
-    beacon_limiter.check(f"pv:{ip or 'unknown'}")
+    await beacon_limiter.check(f"pv:{ip or 'unknown'}")
 
     try:
-        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"), request)
     except HTTPException:
         # A beacon from an unknown or suspended site is dropped, not
         # errored — nothing on the page is waiting for an answer.

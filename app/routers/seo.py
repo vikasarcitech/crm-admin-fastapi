@@ -414,7 +414,7 @@ async def put_robots(
 # ====================================================== public endpoints
 async def _tenant_by_slug(slug: str | None, request: Request) -> dict:
     """Slug first, then the Host header — see tenancy.resolve_public."""
-    return await tenancy.resolve_public(slug, request.headers.get("host"))
+    return await tenancy.resolve_public(slug, request.headers.get("host"), request)
 
 
 @public_router.get("/api/v1/{tenant_slug}/sitemap.xml", include_in_schema=False)

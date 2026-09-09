@@ -43,7 +43,7 @@ log = logging.getLogger("crm.compliance")
 router = APIRouter(prefix="/api/compliance", tags=["compliance"])
 public_router = APIRouter(tags=["compliance-public"])
 
-consent_limiter = RateLimiter(max_requests=30, window_seconds=600)
+consent_limiter = RateLimiter(max_requests=30, window_seconds=600, name="consent")
 
 RETENTION_SCOPES = (
     "leads", "form_submissions", "activity_log", "conversion_events",
@@ -148,10 +148,10 @@ async def record_consent(
     later withdrawal never erases the evidence of the earlier grant.
     """
     ip = client_ip(request)
-    consent_limiter.check(f"consent:{ip or 'unknown'}")
+    await consent_limiter.check(f"consent:{ip or 'unknown'}")
 
     try:
-        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"), request)
     except HTTPException:
         # Same answer either way: a 404 here would enumerate the
         # portfolio, and a suspended site should not error a visitor's

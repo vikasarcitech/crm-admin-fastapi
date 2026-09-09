@@ -956,3 +956,7 @@ ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
 .provider-card p { margin: 0; font-size: 12.5px; flex: 1; }
 .provider-head { display: flex; align-items: center; gap: 8px; }
 .provider-head strong { flex: 1; }
+
+/* Media still being encoded by the worker. */
+.media-icon.is-working { color: var(--brass); }
+.media-icon.is-failed { color: var(--danger); }

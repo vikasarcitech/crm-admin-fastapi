@@ -582,7 +582,7 @@ async def public_config(tenant_slug: str, request: Request) -> dict:
     safe to ship to a browser — a static build embeds whatever this
     returns, so the filtering happens here rather than in the frontend.
     """
-    tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+    tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"), request)
 
     scoped = db.TenantDB(tenant["id"])
     rows = await scoped.fetch("SELECT key, value FROM settings WHERE tenant_id = $1")
@@ -686,7 +686,7 @@ def _now() -> str:
 
 @public_router.get("/api/v1/{tenant_slug}/menus/{menu_slug}")
 async def public_menu(tenant_slug: str, menu_slug: str, request: Request) -> dict:
-    tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+    tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"), request)
     scoped = db.TenantDB(tenant["id"])
     menu = await scoped.fetch_one(
         "SELECT id, name, location FROM menus WHERE tenant_id = $1 AND slug = $2",

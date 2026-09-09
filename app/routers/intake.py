@@ -74,7 +74,7 @@ async def submit(
     request: Request,
 ) -> dict:
     ip = client_ip(request)
-    intake_limiter.check(ip or "unknown")
+    await intake_limiter.check(ip or "unknown")
 
     form = await db.fetch_one(
         FORM_QUERY, collapse(tenant_slug, 60), collapse(form_slug, 60)

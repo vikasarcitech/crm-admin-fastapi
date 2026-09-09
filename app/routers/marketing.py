@@ -48,7 +48,7 @@ log = logging.getLogger("crm.marketing")
 router = APIRouter(prefix="/api/marketing", tags=["marketing"])
 public_router = APIRouter(tags=["marketing-public"])
 
-subscribe_limiter = RateLimiter(max_requests=5, window_seconds=600)
+subscribe_limiter = RateLimiter(max_requests=5, window_seconds=600, name="subscribe")
 
 MAX_IMPORT_ROWS = 20_000
 
@@ -868,7 +868,7 @@ async def delete_utm_link(
 async def _public_tenant(slug: str | None, request: Request | None = None) -> dict:
     """Slug first, then the Host header — see tenancy.resolve_public."""
     return await tenancy.resolve_public(
-        slug, request.headers.get("host") if request else None
+        slug, request.headers.get("host") if request else None, request
     )
 
 
@@ -884,7 +884,7 @@ async def public_subscribe(
     used to test who is on the list.
     """
     ip = client_ip(request)
-    subscribe_limiter.check(f"sub:{ip or 'unknown'}")
+    await subscribe_limiter.check(f"sub:{ip or 'unknown'}")
 
     generic = {"ok": True, "message": "Please check your inbox to confirm your subscription."}
 

@@ -228,6 +228,7 @@ async def run_retention_sweep() -> dict:
     # long-settled queue rows serve no purpose and only grow.
     await db.execute("DELETE FROM preview_tokens WHERE expires_at < now() - interval '7 days'")
     await run_oauth_prune()
+    await run_media_reclaim()
     # Settled connector deliveries: the log is useful for a month, not
     # forever, and it is the highest-volume table the queue produces.
     await db.execute(
@@ -320,19 +321,25 @@ async def backup_worker() -> None:
         await run_scheduled_backup()
 
 
-# ================================================================ registry
-def all_workers() -> list:
-    """Coroutine factories the lifespan handler starts."""
-    return [
-        scheduled_publish_worker,
-        campaign_worker,
-        build_worker,
-        health_worker,
-        retention_worker,
-        backup_worker,
-        usage_worker,
-        connector_worker,
-    ]
+# =============================================== media derivatives
+async def media_worker() -> None:
+    """Encodes responsive derivatives away from the request path.
+
+    Set MEDIA_POLL_SECONDS and run this on its own service when image
+    volume justifies it — it is the only CPU-bound worker here, so it
+    is the first one worth separating.
+    """
+    from .media_jobs import worker  # noqa: PLC0415
+
+    await worker()
+
+
+@_guard("media-reclaim")
+async def run_media_reclaim() -> int:
+    """Requeue jobs whose worker died mid-encode."""
+    from .media_jobs import requeue_stuck  # noqa: PLC0415
+
+    return await requeue_stuck()
 
 
 # ========================================================== connectors
@@ -379,3 +386,70 @@ async def usage_worker() -> None:
     while True:
         await run_usage_refresh()
         await asyncio.sleep(3600)
+
+
+# ================================================================ registry
+# Named so a service can run a subset. `WORKERS=media` puts image
+# encoding — the only CPU-bound job here — on its own task with its own
+# instance size, without that task also polling six other queues.
+WORKERS: dict[str, tuple] = {
+    # name: (factory, one-line description)
+    "publish": (scheduled_publish_worker, "Publishes scheduled content"),
+    "campaigns": (campaign_worker, "Sends scheduled campaigns"),
+    "builds": (build_worker, "Fires build hooks and CDN invalidations"),
+    "health": (health_worker, "Probes health checks"),
+    "retention": (retention_worker, "Applies retention policies and housekeeping"),
+    "backups": (backup_worker, "Scheduled database backups"),
+    "usage": (usage_worker, "Refreshes per-site usage roll-ups"),
+    "connectors": (connector_worker, "Delivers CRM and automation events"),
+    "media": (media_worker, "Encodes image derivatives (CPU-bound)"),
+}
+
+# Queues whose work is latency-sensitive to a person waiting: these are
+# the ones worth running close to the web tier.
+INTERACTIVE = frozenset({"media", "connectors", "builds"})
+
+
+def selected_workers() -> list[tuple[str, object]]:
+    """Which workers this process should run.
+
+    RUN_WORKERS=0 runs none. WORKERS unset runs all of them, which is
+    right for a single-process install. WORKERS=media,connectors runs
+    just those, which is how heavy jobs get their own service.
+    """
+    from .config import settings as _settings  # noqa: PLC0415
+
+    if not _settings.run_workers:
+        return []
+
+    wanted = [w.strip().lower() for w in (_settings.workers or "").split(",") if w.strip()]
+    if not wanted or "all" in wanted:
+        return [(name, factory) for name, (factory, _) in WORKERS.items()]
+
+    chosen: list[tuple[str, object]] = []
+    for name in wanted:
+        entry = WORKERS.get(name)
+        if entry is None:
+            log.warning(
+                "unknown worker %r in WORKERS; valid names: %s",
+                name, ", ".join(sorted(WORKERS)),
+            )
+            continue
+        chosen.append((name, entry[0]))
+    return chosen
+
+
+def describe_workers() -> dict:
+    """Reported on /healthz so it is visible which queues this process
+    is draining — and, by omission, which nothing is draining."""
+    running = {name for name, _ in selected_workers()}
+    return {
+        "running": sorted(running),
+        "available": {name: description for name, (_, description) in WORKERS.items()},
+        "notRunningHere": sorted(set(WORKERS) - running),
+    }
+
+
+def all_workers() -> list:
+    """Backwards-compatible: the factories this process should run."""
+    return [factory for _, factory in selected_workers()]

@@ -31,7 +31,9 @@ from fastapi import (
 )
 from fastapi.responses import Response
 
-from .. import db, events, imaging, storage, tenancy
+import asyncio
+
+from .. import db, events, imaging, media_jobs, storage, tenancy
 from ..content import slugify
 from ..permissions import require_perm
 from ..schemas import (
@@ -51,15 +53,33 @@ router = APIRouter(prefix="/api/media", tags=["media"])
 public_router = APIRouter(tags=["media-public"])
 
 MEDIA_COLUMNS = """m.id, m.folder_id, m.storage_key, m.filename, m.original_filename,
-                   m.mime_type, m.byte_size, m.width, m.height, m.checksum,
-                   m.alt_text, m.title, m.caption, m.tags, m.variants,
+                   m.mime_type, m.byte_size, m.original_bytes, m.width, m.height,
+                   m.checksum, m.alt_text, m.title, m.caption, m.tags, m.variants,
+                   m.state::text AS state, m.processing_error,
                    m.uploaded_by, m.deleted_at, m.created_at, m.updated_at"""
 
 MAX_TAGS = 25
 
 
 def _decorate(row: dict) -> dict:
-    """Add the URLs and the srcset the frontend actually consumes."""
+    """Add the URLs and the srcset the frontend actually consumes.
+
+    A file still being processed has no URL. The source object holds
+    the untouched upload — EXIF, GPS and all — and is deliberately not
+    servable until the worker has stripped it.
+    """
+    state = row.get("state", "ready")
+    row["isProcessing"] = state in {"pending", "processing"}
+    row["processingFailed"] = state == "failed"
+
+    if row["isProcessing"]:
+        row["url"] = None
+        row["srcset"] = {}
+        row["isImage"] = row["mime_type"] in imaging.RASTER_TYPES
+        saved = None
+        row["savedBytes"] = saved
+        return row
+
     row["url"] = storage.public_url(row["storage_key"])
     variants = row.get("variants") or []
     for variant in variants:
@@ -76,6 +96,10 @@ def _decorate(row: dict) -> dict:
         srcset[mime] += f"{', ' if srcset[mime] else ''}{variant['url']} {variant['width']}w"
     row["srcset"] = srcset
     row["isImage"] = row["mime_type"] in imaging.RASTER_TYPES
+    original = row.get("original_bytes")
+    row["savedBytes"] = (
+        max(0, int(original) - int(row["byte_size"])) if original else None
+    )
     return row
 
 
@@ -241,56 +265,67 @@ async def upload(
         response.status_code = 200
         return {"media": _decorate(duplicate), "duplicate": True}
 
-    try:
-        primary, variants = imaging.build_variants(user.tenant_id, original_name, data, mime)
-    except imaging.UploadRejected as exc:
-        raise HTTPException(400, str(exc)) from exc
+    extension = imaging.ALLOWED_TYPES[mime][0][0]
+    needs_work = mime in imaging.RASTER_TYPES
 
-    written: list[str] = []
+    # Raster images go through the worker: encoding six derivatives is
+    # ~1.7s of CPU for a 12 MP photo, and doing it here blocked the
+    # whole event loop. Everything else (PDF, video, text) has no
+    # derivatives, so it is stored and finished inline.
+    if needs_work:
+        key = media_jobs.source_key(user.tenant_id, original_name, data, extension)
+        state, variants, width, height = "pending", [], None, None
+        stored_mime, stored_bytes = mime, len(data)
+    else:
+        key = imaging.storage_key(user.tenant_id, original_name, data, extension)
+        state, variants, width, height = "ready", [], None, None
+        stored_mime, stored_bytes = mime, len(data)
+
     try:
-        storage.put(primary["key"], primary["data"], primary["mime"])
-        written.append(primary["key"])
-        for variant in variants:
-            storage.put(variant["key"], variant["data"], variant["mime"])
-            written.append(variant["key"])
+        # to_thread so a slow S3 PUT does not stall the loop either.
+        await asyncio.to_thread(storage.put, key, data, stored_mime)
     except storage.StorageError as exc:
-        # Roll back the objects already written; a half-uploaded set
-        # would otherwise be orphaned with nothing pointing at it.
-        storage.delete_many(written)
         raise HTTPException(502, str(exc)) from exc
 
-    row = await scoped.fetch_one(
-        f"""INSERT INTO media (tenant_id, folder_id, storage_key, filename, original_filename,
-                               mime_type, byte_size, checksum, width, height,
-                               alt_text, title, caption, tags, variants, uploaded_by)
-            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15::jsonb, $16)
-            RETURNING {MEDIA_COLUMNS.replace("m.", "")}""",
-        folder_id,
-        primary["key"],
-        primary["key"].rsplit("/", 1)[-1],
-        original_name,
-        primary["mime"],
-        primary["bytes"],
-        digest,
-        primary["width"],
-        primary["height"],
-        collapse(alt_text, 300),
-        collapse(title, 200) or original_name.rsplit(".", 1)[0][:200],
-        keep_lines(caption, 600),
-        _parse_tags(tags),
-        # Strip the bytes: only the metadata belongs in the row.
-        [{k: v for k, v in variant.items() if k != "data"} for variant in variants],
-        user.id,
-    )
+    try:
+        row = await scoped.fetch_one(
+            f"""INSERT INTO media (tenant_id, folder_id, storage_key, filename,
+                                   original_filename, mime_type, byte_size,
+                                   original_bytes, checksum, width, height,
+                                   alt_text, title, caption, tags, variants,
+                                   state, uploaded_by)
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14,
+                        $15, $16::jsonb, $17::media_state, $18)
+                RETURNING {MEDIA_COLUMNS.replace("m.", "")}""",
+            folder_id, key, key.rsplit("/", 1)[-1], original_name,
+            stored_mime, stored_bytes, len(data), digest, width, height,
+            collapse(alt_text, 300),
+            collapse(title, 200) or original_name.rsplit(".", 1)[0][:200],
+            keep_lines(caption, 600), _parse_tags(tags), variants, state, user.id,
+        )
+    except Exception:
+        # No row means nothing will ever reference the object.
+        await asyncio.to_thread(storage.delete, key)
+        raise
+
+    if needs_work:
+        await media_jobs.queue(
+            user.tenant_id, row["id"], source=key, mime=mime, filename=original_name
+        )
 
     await events.log_activity(
         user.tenant_id, "media.uploaded", user_id=user.id,
         object_type="media", object_id=row["id"],
-        meta={"filename": original_name, "mime": primary["mime"],
-              "bytes": primary["bytes"], "variants": len(variants)},
+        meta={"filename": original_name, "mime": mime, "bytes": len(data),
+              "queued": needs_work},
         ip=db.to_inet(client_ip(request)),
     )
-    return {"media": _decorate(row), "savedBytes": max(0, len(data) - primary["bytes"])}
+    return {
+        "media": _decorate(row),
+        "processing": needs_work,
+        "message": ("Uploaded. Optimized versions are being generated."
+                    if needs_work else "Uploaded."),
+    }
 
 
 def _parse_tags(raw: str | list[str] | None) -> list[str]:
@@ -616,6 +651,11 @@ async def serve_media(key: str) -> Response:
     from ..config import settings  # noqa: PLC0415
 
     if settings.media_storage != "local":
+        raise HTTPException(404, "Not found.")
+
+    if media_jobs.is_source_key(key):
+        # An unprocessed upload still carries its EXIF. It becomes
+        # servable once the worker has stripped it and swapped the key.
         raise HTTPException(404, "Not found.")
 
     row = await db.fetch_one(

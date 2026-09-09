@@ -48,6 +48,7 @@
       ['people', 'People'],
       ['audit', 'Site audit'],
       ['isolation', 'Isolation'],
+      ['scale', 'Scale'],
     ], tab);
 
     const panes = {
@@ -55,6 +56,7 @@
       people: () => peoplePane(ctx),
       audit: () => auditPane(ctx),
       isolation: () => isolationPane(ctx),
+      scale: () => scalePane(ctx),
     };
     mount(ctx.el, [strip, await (panes[tab] || panes.sites)()]);
   }
@@ -636,6 +638,119 @@
         h('p.muted', { text: 'Application-layer scoping (TenantDB) is unaffected and '
           + 'stays in force either way — this is the layer underneath it.' }),
       ])),
+    ]);
+  }
+
+  // =============================================================== scale
+  async function scalePane(ctx) {
+    const s = await api.get('/api/platform/scale');
+    const q = s.queues || {};
+
+    const wait = (seconds) => (seconds
+      ? (seconds < 60 ? `${seconds}s` : `${Math.round(seconds / 60)}m`)
+      : '—');
+
+    const queueRow = (label, depth, oldest, dead) => h('div.check-row', {}, [
+      h('span.check-dot', {
+        dataset: {
+          state: (oldest && oldest > 600) || dead ? 'off' : 'ok',
+        },
+      }),
+      h('span', { text: label }),
+      h('span.cell-mono', { text: `${number(depth || 0)} waiting` }),
+      h('span.muted', { text: `oldest ${wait(oldest)}` }),
+      dead ? badge(`${dead} gave up`, 'off') : null,
+    ]);
+
+    return h('div.stack', {}, [
+      ...s.advice.map((a) => notice(a.text,
+        a.level === 'ok' ? 'info' : a.level === 'warning' ? 'warn' : 'info')),
+
+      h('div.kpis', {}, [
+        kpi('Active sites', number(s.portfolio.active),
+          `target ${s.portfolio.target} · ${s.portfolio.headroomToTarget} to go`),
+        kpi('DB connections',
+          `${s.database.connections.used}/${s.database.connections.maximum}`),
+        kpi('Read replicas', s.database.readReplicas,
+          s.database.readReplicas ? 'reporting reads offloaded' : 'reads on the writer'),
+        kpi('Rate limits', s.rateLimiting.shared ? 'shared' : 'per-process',
+          s.rateLimiting.backend),
+        kpi('Cache invalidation',
+          s.cacheInvalidation.connected ? 'live' : 'TTL only',
+          s.cacheInvalidation.enabled ? 'LISTEN/NOTIFY' : 'disabled'),
+      ]),
+
+      h('div.split', {}, [
+        h('div.stack', {}, [
+          panel('Queues', panelBody([
+            h('p.muted', { text: 'Depth alone is not the signal — a deep queue that '
+              + 'drains in seconds is healthy, a shallow one stuck for an hour is not.' }),
+            queueRow('Image encoding', q.media, q.media_oldest_s, q.media_failed),
+            queueRow('CRM & automation', q.connectors, q.connector_oldest_s,
+              q.connectors_dead),
+            queueRow('Outbound email', q.email, q.email_oldest_s, q.email_dead),
+            queueRow('Build hooks', q.builds, null, 0),
+            h('div.check-row', {}, [
+              h('span.check-dot', { dataset: { state: 'ok' } }),
+              h('span', { text: 'Content awaiting its publish date' }),
+              h('span.cell-mono', { text: number(q.scheduled || 0) }),
+            ]),
+          ])),
+          panel('Workers on this process', panelBody([
+            h('p.muted', { text: 'Set WORKERS to split heavy jobs onto their own '
+              + 'service. Image encoding is the only CPU-bound one.' }),
+            ...Object.entries(s.workers.available).map(([name, description]) =>
+              h('div.check-row', {}, [
+                h('span.check-dot', {
+                  dataset: { state: s.workers.running.includes(name) ? 'ok' : 'off' },
+                }),
+                h('code', { text: name }),
+                h('span.muted', { text: description }),
+              ])),
+            s.workers.notRunningHere.length
+              ? h('p.muted', { text: `Not running here: ${s.workers.notRunningHere.join(', ')} `
+                + '— another service must be, or that work does not happen.' })
+              : null,
+          ])),
+        ]),
+        h('div.stack', {}, [
+          panel('Largest tables', table([
+            { label: 'Table', cell: (r) => h('code', { text: r.table_name }) },
+            { label: 'Rows', class: 'cell-mono', cell: (r) => number(r.approx_rows) },
+            { label: 'Total', class: 'cell-mono', cell: (r) => bytes(r.total_bytes) },
+          ], s.database.topTables.slice(0, 10))),
+          panel('Heaviest sites', [
+            table([
+              { label: 'Site', cell: (r) => [h('div.cell-name', { text: r.name }),
+                h('div.cell-meta', { text: r.plan })] },
+              { label: 'Leads 30d', class: 'cell-mono', cell: (r) => number(r.leads_30d) },
+              { label: 'Content', class: 'cell-mono', cell: (r) => number(r.content_items) },
+              { label: 'Media', class: 'cell-mono', cell: (r) => bytes(r.media_bytes || 0) },
+              { label: 'Own bucket', cell: (r) => bool(r.own_bucket, 'Yes', 'Shared') },
+            ], s.heaviestTenants, { empty: 'No usage recorded yet.' }),
+            panelBody(h('p.muted', {
+              text: 'A site far above the others is the candidate for its own bucket, '
+                + 'CDN and eventually its own database — set those in its infra '
+                + 'settings, without touching the rest of the portfolio.',
+            })),
+          ]),
+          panel('Public API versions', [
+            table([
+              { label: 'Version', cell: (r) => badge(r.version, 'neutral') },
+              { label: 'Site', cell: (r) => r.name },
+              { label: 'Requests 30d', class: 'cell-mono', cell: (r) => number(r.requests) },
+              { label: 'Last seen', class: 'cell-mono', cell: (r) => relativeTime(r.last_seen_at) },
+            ], s.apiVersionUsage, {
+              empty: 'No versioned API calls recorded in the last 30 days.',
+            }),
+            panelBody(h('p.muted', {
+              text: `Current: ${s.api.current}. A frontend deployed months ago still `
+                + 'calls the version it was built against, so this is what makes '
+                + 'retiring one a decision rather than a gamble.',
+            })),
+          ]),
+        ]),
+      ]),
     ]);
   }
 

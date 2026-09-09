@@ -49,7 +49,7 @@ public_router = APIRouter(tags=["conversions-public"])
 # The public conversion beacon is unauthenticated, so it gets its own
 # budget — generous enough for a real visitor, tight enough that it is
 # not a free write endpoint.
-conversion_limiter = RateLimiter(max_requests=60, window_seconds=600)
+conversion_limiter = RateLimiter(max_requests=60, window_seconds=600, name="conversion")
 
 FORM_COLUMNS = """f.id, f.slug::text AS slug, f.name, f.fields, f.notify_emails,
                   f.settings, f.lead_mapping, f.notification_rules, f.autoresponder,
@@ -745,10 +745,10 @@ async def record_conversion(
     cannot be used to probe anything.
     """
     ip = client_ip(request)
-    conversion_limiter.check(f"conv:{ip or 'unknown'}")
+    await conversion_limiter.check(f"conv:{ip or 'unknown'}")
 
     try:
-        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"), request)
     except HTTPException:
         # Same answer as success: a 404 here would enumerate tenants.
         return {"ok": True}

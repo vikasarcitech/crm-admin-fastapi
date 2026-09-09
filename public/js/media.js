@@ -45,9 +45,23 @@
         text: trashed ? 'The media trash is empty.' : 'No files match. Upload something to start.',
       }));
 
+    const encoding = data.media.filter((m) => m.isProcessing).length;
+    if (encoding) {
+      // The worker finishes in seconds; re-render rather than making
+      // the editor guess when to reload.
+      window.setTimeout(() => {
+        if (window.location.hash.startsWith('#/media')) ctx.reload();
+      }, 3000);
+    }
+
     mount(ctx.el, [
       tabs(ctx, [['', 'Library', data.library.files], ['trash', 'Trash']],
         ctx.params.view || '', 'view'),
+      encoding
+        ? notice(`${encoding} file(s) are being optimized. Responsive WebP and `
+          + 'AVIF versions are generated in the background, so uploading stays '
+          + 'fast however large the image.', 'info')
+        : null,
       data.storage.backend === 'local'
         ? notice('Media is stored on this server’s disk. Set MEDIA_STORAGE=s3 before '
           + 'deploying to Fargate — a container filesystem does not survive a restart.', 'warn')
@@ -87,9 +101,16 @@
   }
 
   function tile(ctx, m) {
-    const preview = m.isImage
-      ? h('img', { src: m.url, alt: m.alt_text || '', loading: 'lazy' })
-      : h('div.media-icon', { text: (m.mime_type.split('/')[1] || 'file').toUpperCase() });
+    // A file still being encoded has no URL yet — the worker has not
+    // produced the optimized version, and the raw upload is not
+    // servable. Show what is happening rather than a broken image.
+    const preview = m.isProcessing
+      ? h('div.media-icon.is-working', { text: 'ENCODING' })
+      : m.processingFailed
+        ? h('div.media-icon.is-failed', { text: 'FAILED' })
+        : m.isImage
+          ? h('img', { src: m.url, alt: m.alt_text || '', loading: 'lazy' })
+          : h('div.media-icon', { text: (m.mime_type.split('/')[1] || 'file').toUpperCase() });
 
     return h('button.media-tile', {
       type: 'button',
@@ -103,11 +124,16 @@
           text: [
             bytes(m.byte_size),
             m.width ? `${m.width}×${m.height}` : null,
-            m.usage_count ? `used ${m.usage_count}×` : 'unused',
+            m.isProcessing ? 'optimizing…'
+              : m.usage_count ? `used ${m.usage_count}×` : 'unused',
           ].filter(Boolean).join(' · '),
         }),
       ]),
-      m.alt_text ? null : h('span.media-flag', { text: 'no alt text' }),
+      m.isProcessing
+        ? h('span.media-flag', { text: 'processing' })
+        : m.processingFailed
+          ? h('span.media-flag', { text: 'failed' })
+          : m.alt_text ? null : h('span.media-flag', { text: 'no alt text' }),
     ]);
   }
 
@@ -246,6 +272,7 @@
     if (!files.length) return;
     let done = 0;
     let failed = 0;
+    let queued = 0;
 
     for (const file of files.slice(0, 25)) {
       const body = new FormData();
@@ -265,13 +292,18 @@
         if (!res.ok) throw new Error(payload.error || `Upload failed (${res.status})`);
         done += 1;
         if (payload.duplicate) toast(`${file.name} was already in the library.`);
+        else if (payload.processing) queued += 1;
       } catch (err) {
         failed += 1;
         toast(`${file.name}: ${err.message}`, 'error');
       }
     }
 
-    if (done) toast(`${done} file(s) uploaded.`);
+    if (done) {
+      toast(queued
+        ? `${done} file(s) uploaded. ${queued} being optimized in the background.`
+        : `${done} file(s) uploaded.`);
+    }
     if (done || !failed) ctx.reload();
   }
 

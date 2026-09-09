@@ -19,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, events, mail, tenancy, workers
+from . import cache, db, events, mail, tenancy, versioning, workers
 from .config import settings
 from .routers import (
     admin,
@@ -87,6 +87,11 @@ async def lifespan(app: FastAPI):
         log.warning("tenant isolation: application scope only — %s", isolation["warning"])
 
     tasks: list[asyncio.Task] = []
+
+    # Cache invalidation listens on its own connection regardless of
+    # RUN_WORKERS: a web task that does not listen serves stale
+    # permissions and stale site status after another task changes them.
+    tasks.append(asyncio.create_task(cache.listener()))
     if settings.run_workers:
         # Across several tasks or uvicorn workers, run these in ONE
         # dedicated process (RUN_WORKERS=0 elsewhere) rather than polling
@@ -94,11 +99,19 @@ async def lifespan(app: FastAPI):
         tasks.append(asyncio.create_task(events.webhook_worker()))
         tasks.append(asyncio.create_task(events.session_prune_worker()))
         tasks.append(asyncio.create_task(mail.email_worker()))
-        # Platform workers: scheduled publishing, campaigns, build hooks
-        # and CDN invalidation, health probes, retention and backups.
-        for factory in workers.all_workers():
+        # Platform workers. Which ones run here is WORKERS; the queues
+        # nothing drains are the ones that silently stop working, so
+        # both lists are logged.
+        selected = workers.selected_workers()
+        for name, factory in selected:
             tasks.append(asyncio.create_task(factory()))
-        log.info("started %d background workers", len(tasks))
+        summary = workers.describe_workers()
+        log.info("workers running here: %s", ", ".join(summary["running"]) or "none")
+        if summary["notRunningHere"]:
+            log.info(
+                "workers NOT running here (another service must): %s",
+                ", ".join(summary["notRunningHere"]),
+            )
 
     try:
         yield
@@ -133,6 +146,33 @@ async def security_headers(request: Request, call_next):
     response.headers.setdefault("content-security-policy", CSP)
     if settings.env == "production":
         response.headers["strict-transport-security"] = "max-age=31536000; includeSubDomains"
+    return response
+
+
+# --------------------------------------------------- API version headers
+@app.middleware("http")
+async def api_version_headers(request: Request, call_next):
+    """Stamp the version on every /api/v{n} response, and warn early.
+
+    A static frontend deployed months ago should learn that its version
+    is going away from a response header its build log shows, not from
+    the day it stops working.
+    """
+    response = await call_next(request)
+
+    version = versioning.version_of(request.url.path)
+    if version:
+        for key, value in versioning.headers_for(version).items():
+            response.headers[key] = value
+
+        # Usage is counted per day per site, not per request, and only
+        # for calls that actually resolved a tenant.
+        tenant_id = getattr(request.state, "tenant_id", None)
+        if tenant_id:
+            await versioning.record(
+                tenant_id, version, request.url.path,
+                request.headers.get("user-agent"),
+            )
     return response
 
 
@@ -237,12 +277,22 @@ async def healthz() -> dict:
     every RLS policy has been inert the whole time.
     """
     isolation = await db.rls_status()
+    from . import ratelimit  # noqa: PLC0415
+
     return {
         "ok": True,
         "isolation": {
             "applicationScope": True,
             "rowLevelSecurity": isolation["effective"],
             "warning": isolation["warning"],
+        },
+        # Everything below is about running more than one of these.
+        "api": versioning.status(),
+        "scale": {
+            "rateLimiting": ratelimit.describe(),
+            "cacheInvalidation": cache.status(),
+            "readReplicas": db.replica_count(),
+            "workers": workers.describe_workers(),
         },
     }
 

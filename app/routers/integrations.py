@@ -252,7 +252,7 @@ async def create_connector(
         payload.field_mapping or {}, chosen, user.id,
     )
     if provider.kind == "email":
-        mail.invalidate_sender(user.tenant_id)
+        await mail.invalidate_sender_everywhere(user.tenant_id)
 
     await events.log_activity(
         user.tenant_id, "connector.created", user_id=user.id,
@@ -346,7 +346,7 @@ async def update_connector(
         chosen, payload.is_active,
     )
     if provider.kind == "email":
-        mail.invalidate_sender(user.tenant_id)
+        await mail.invalidate_sender_everywhere(user.tenant_id)
 
     await events.log_activity(
         user.tenant_id, "connector.updated", user_id=user.id,
@@ -373,7 +373,7 @@ async def delete_connector(
         "DELETE FROM connectors WHERE tenant_id = $1 AND id = $2", connector_id
     )
     if row["kind"] == "email":
-        mail.invalidate_sender(user.tenant_id)
+        await mail.invalidate_sender_everywhere(user.tenant_id)
 
     await events.log_activity(
         user.tenant_id, "connector.deleted", user_id=user.id,

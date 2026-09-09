@@ -80,6 +80,7 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/platform.sql
 # Tenancy: site status, domains, usage, and the row-level-security
 # policies. Applied last because it walks every table that exists.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/connectors.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/scale.sql
 # tenancy.sql last: its RLS block walks every table that exists, so
 # re-running it is how connectors.sql's tables get their policy.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/tenancy.sql

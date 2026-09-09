@@ -41,6 +41,11 @@ from .config import settings
 log = logging.getLogger("crm.db")
 
 _pool: asyncpg.Pool | None = None
+# Read replicas, round-robined. Empty means every read goes to the
+# writer, which is the correct default — a replica is only useful once
+# read volume actually justifies the replication lag it introduces.
+_replicas: list[asyncpg.Pool] = []
+_replica_turn = 0
 
 SLOW_QUERY_MS = 300
 
@@ -82,11 +87,33 @@ async def connect() -> asyncpg.Pool:
         init=_init_connection,
         ssl="require" if settings.pg_ssl == "require" else None,
     )
+
+    for dsn in settings.replica_urls:
+        try:
+            replica = await asyncpg.create_pool(
+                dsn=dsn,
+                min_size=1,
+                max_size=settings.pg_pool_max,
+                command_timeout=15,
+                init=_init_connection,
+                ssl="require" if settings.pg_ssl == "require" else None,
+            )
+            _replicas.append(replica)
+        except Exception as exc:
+            # A replica that will not connect must not stop the app
+            # starting: reads fall back to the writer.
+            log.error("read replica unavailable, falling back to the writer: %s", exc)
+
+    if _replicas:
+        log.info("connected %d read replica(s)", len(_replicas))
     return _pool
 
 
 async def disconnect() -> None:
     global _pool
+    for replica in _replicas:
+        await replica.close()
+    _replicas.clear()
     if _pool is not None:
         await _pool.close()
         _pool = None
@@ -98,17 +125,42 @@ def pool() -> asyncpg.Pool:
     return _pool
 
 
+def read_pool() -> asyncpg.Pool:
+    """A replica if one is configured, otherwise the writer.
+
+    Round-robin rather than random so a two-replica setup actually
+    alternates instead of landing on one of them two-thirds of the time.
+    """
+    global _replica_turn
+    if not _replicas:
+        return pool()
+    _replica_turn = (_replica_turn + 1) % len(_replicas)
+    return _replicas[_replica_turn]
+
+
+def replica_count() -> int:
+    return len(_replicas)
+
+
 def _log_slow(sql: str, started: float) -> None:
     elapsed = (time.monotonic() - started) * 1000
     if elapsed > SLOW_QUERY_MS:
         log.warning("slow query %.0fms: %s", elapsed, " ".join(sql.split())[:90])
 
 
-async def fetch(sql: str, *args: Any) -> list[dict]:
-    """Run a query and return rows as plain dicts."""
+async def fetch(sql: str, *args: Any, replica: bool = False) -> list[dict]:
+    """Run a query and return rows as plain dicts.
+
+    `replica=True` sends it to a read replica when one is configured.
+    Opt-in, never automatic: replication lag means a read that follows
+    its own write can miss it, so only queries that tolerate seconds of
+    staleness — reporting, dashboards, the portfolio roll-up — should
+    ask for it.
+    """
     started = time.monotonic()
+    target = read_pool() if replica else pool()
     try:
-        rows = await pool().fetch(sql, *args)
+        rows = await target.fetch(sql, *args)
     except asyncpg.PostgresError as exc:
         # Never echo the argument tuple — it can hold PII or password hashes.
         log.error("query failed: %s", exc)
@@ -117,8 +169,8 @@ async def fetch(sql: str, *args: Any) -> list[dict]:
     return [dict(row) for row in rows]
 
 
-async def fetch_one(sql: str, *args: Any) -> dict | None:
-    rows = await fetch(sql, *args)
+async def fetch_one(sql: str, *args: Any, replica: bool = False) -> dict | None:
+    rows = await fetch(sql, *args, replica=replica)
     return rows[0] if rows else None
 
 

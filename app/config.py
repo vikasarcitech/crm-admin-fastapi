@@ -82,6 +82,12 @@ class Settings:
     aws_region: str = os.getenv("AWS_REGION", "")
 
     # --------------------------------------------------------- workers
+    # Which background workers this process runs. Blank or "all" runs
+    # every one (right for a single install). A comma-separated subset
+    # — "media", "connectors,builds" — is how heavy jobs are moved onto
+    # their own service. See app/workers.py WORKERS for the names.
+    workers: str = os.getenv("WORKERS", "")
+
     content_poll_seconds: int = int(os.getenv("CONTENT_POLL_SECONDS", "30"))
     build_poll_seconds: int = int(os.getenv("BUILD_POLL_SECONDS", "15"))
     health_poll_seconds: int = int(os.getenv("HEALTH_POLL_SECONDS", "60"))
@@ -119,6 +125,31 @@ class Settings:
     ).rstrip("/")
 
     connector_poll_seconds: int = int(os.getenv("CONNECTOR_POLL_SECONDS", "10"))
+    # Media derivative generation. Polls faster while a backlog
+    # exists, so this is the idle interval.
+    media_poll_seconds: int = int(os.getenv("MEDIA_POLL_SECONDS", "5"))
+
+    # ----------------------------------------------- read replicas
+    # Comma-separated DSNs. Reads that explicitly opt in (reporting,
+    # dashboards) go here; everything else uses the writer. Empty means
+    # every read is on the writer, which is right until read volume
+    # justifies the replication lag.
+    replica_urls: list[str] = _csv("DATABASE_REPLICA_URLS")
+
+    # ------------------------------------------------------ caching
+    # Cross-process cache invalidation over LISTEN/NOTIFY. With it off,
+    # a permission or site change takes up to the cache TTL to reach
+    # every replica instead of milliseconds.
+    cache_notify: bool = os.getenv("CACHE_NOTIFY", "1") == "1"
+
+    # ------------------------------------------------ rate limiting
+    # 'memory' counts per process, so with several workers or tasks the
+    # effective limit is multiplied by the process count — correct only
+    # for single-process development. 'postgres' shares the counters
+    # with no new infrastructure; 'redis' when the write volume
+    # outgrows that. /healthz reports which is in use.
+    rate_limit_backend: str = os.getenv("RATE_LIMIT_BACKEND", "memory")
+    redis_url: str = os.getenv("REDIS_URL", "")
 
     # ----------------------------------------------------- isolation
     # Declare the tenant on the connection so the row-level-security

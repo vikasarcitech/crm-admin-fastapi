@@ -70,12 +70,33 @@ _connector_cache: dict[int, tuple[float, dict | None]] = {}
 
 
 def invalidate_sender(tenant_id: int | None = None) -> None:
-    """Called when an email connector is saved, so the next message
-    uses the new settings rather than waiting out the cache."""
+    """Drop this process's copy."""
     if tenant_id is None:
         _connector_cache.clear()
     else:
         _connector_cache.pop(tenant_id, None)
+
+
+async def invalidate_sender_everywhere(tenant_id: int | None = None) -> None:
+    """Called when an email connector is saved, so the next message on
+    any replica uses the new settings rather than waiting out a TTL."""
+    invalidate_sender(tenant_id)
+    from . import cache  # noqa: PLC0415
+
+    await cache.invalidate_email_sender(tenant_id)
+
+
+def _on_invalidate(message: dict) -> None:
+    invalidate_sender(message.get("tenant_id"))
+
+
+def _register_cache() -> None:
+    from . import cache  # noqa: PLC0415
+
+    cache.subscribe("email_sender", _on_invalidate)
+
+
+_register_cache()
 
 
 async def _sender_for(tenant_id: int) -> dict | None:

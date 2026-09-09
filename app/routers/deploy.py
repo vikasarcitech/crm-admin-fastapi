@@ -419,7 +419,7 @@ async def _tenant(slug: str | None, request: Request) -> dict:
     Goes through tenancy.resolve_public so a suspended site answers 503
     rather than serving stale content, and an archived one is 404.
     """
-    return await tenancy.resolve_public(slug, request.headers.get("host"))
+    return await tenancy.resolve_public(slug, request.headers.get("host"), request)
 
 
 CACHE_PUBLIC = {"cache-control": "public, max-age=60, stale-while-revalidate=300"}

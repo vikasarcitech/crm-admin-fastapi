@@ -31,14 +31,15 @@ It creates the venv, installs, applies both schema files, seeds a workspace and
 starts the server. If the database isn't reachable it prints the two `CREATE`
 commands you need and stops. Re-run any time; `./setup.sh --start` skips setup.
 
-The schema lives in four idempotent files applied in order — `db/schema.sql`
+The schema lives in five idempotent files applied in order — `db/schema.sql`
 (the original core: tenants, users, sessions, leads, forms, pages),
 `db/platform.sql` (content, media, SEO, marketing, analytics, publishing,
-operations, compliance), `db/connectors.sql` (integrations) and
-`db/tenancy.sql` (site status, domains, usage, and the row-level-security
-policies). All four are safe to re-run, and `tenancy.sql` goes **last**
-because its policy block walks every table that exists — re-running it is how
-a newly added table picks up its isolation policy.
+operations, compliance), `db/connectors.sql` (integrations), `db/scale.sql`
+(job queues, shared rate limits, measured indexes) and `db/tenancy.sql` (site
+status, domains, usage, and the row-level-security policies). All five are
+safe to re-run, and `tenancy.sql` goes **last** because its policy block walks
+every table that exists — re-running it is how a newly added table picks up its
+isolation policy.
 
 **Zero install — Docker:**
 
@@ -57,6 +58,7 @@ cp .env.example .env                     # set DATABASE_URL at minimum
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/schema.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/platform.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/connectors.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/scale.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tenancy.sql
 OWNER_EMAIL=you@example.com OWNER_PASSWORD='at-least-12-chars' python -m db.seed
 
@@ -76,6 +78,7 @@ docs are at `/api/docs` in development and disabled in production.
 | **Media** | Central library with search, folders and tags, alt/title/caption, magic-byte validation, EXIF stripping, automatic WebP + AVIF derivatives at responsive widths, content-addressed keys with a one-year CDN TTL, usage tracking that blocks deleting a file a page still renders, local or S3 storage |
 | **Access** | Super Admin / Admin / Editor / Author / Contributor plus the original Agent and Viewer CRM roles, 45 named permissions with per-workspace overrides, cross-site membership and session switching, profiles with avatar and social links, optional TOTP 2FA with single-use recovery codes, active-session list with revoke, searchable audit log |
 | **Integrations** | A provider-agnostic connector layer: Zoho CRM, HubSpot, Salesforce and Pipedrive; Zapier, Make and n8n; Amazon SES, Brevo, SendGrid, Mailchimp and SMTP. OAuth 2.0 with PKCE and automatic token refresh, or API keys — encrypted at rest. Per-provider field mapping with a preview, derived idempotency keys, retries with backoff, a full delivery log with replay, and health on every connector. Adding a provider is a registry entry plus one class |
+| **Scale** | Designed for ~100 sites with a path to several hundred: heavy work (image encoding, email, CRM delivery, builds, backups) on selectable background workers; shared rate limiting so the app is genuinely stateless; cross-process cache invalidation over LISTEN/NOTIFY; opt-in read replicas; per-site limits and infrastructure overrides; a capacity screen that measures queues by *oldest wait*, not just depth; API version usage tracked per site so a version can be retired safely |
 | **Multi-site** | Create and provision a site from the admin; per-site users, content, media, leads, settings, integrations and API keys; multiple verified domains per site with host-based resolution; per-site CORS derived from those domains; per-site limits and infrastructure overrides; suspend/resume/archive/delete with a lifecycle audit that outlives a deletion; portfolio KPIs and a cross-site user directory; four-layer isolation with a report that says which layers are actually enforced |
 | **Site** | Drag-free nested menu builder (keyboard- and touch-accessible) with links that resolve content by id, reusable blocks for CTAs and banners, site identity, logo, favicon, contact details, SMTP sender, maintenance mode, timezone and locale — all exposed to the frontend through one config endpoint |
 | **Pipeline** | Lead records with status (New → Contacted → Qualified → Proposal → Won → Lost), owner, follow-up date, deal value, notes, merged activity timeline, search, filters, bulk actions and CSV export |
@@ -114,7 +117,6 @@ app/
   tenancy.py         the control plane: resolution, lifecycle, domains, limits
   security.py        sessions, bcrypt, CSRF, role dependencies
   permissions.py     role → permission matrix, overrides, require_perm()
-  ratelimit.py       fixed-window limiter (in-process — see caveats)
   events.py          activity log, webhook queue, notifications, folded error log
   schemas.py         pydantic request models (one place for every shape)
   mail.py            outbound email queue, worker and provider abstraction
@@ -124,6 +126,10 @@ app/
   bootstrap.py       provisioning a workspace with its defaults
   publishing.py      sitemaps, build hooks, CDN invalidation
   crypto.py          Fernet encryption for integration credentials
+  media_jobs.py      image derivatives, off the request path
+  cache.py           cross-process invalidation over LISTEN/NOTIFY
+  ratelimit.py       pluggable limiter: memory | postgres | redis
+  versioning.py      public API version stamping, deprecation, usage
   connectors/
     registry.py      every provider, declared as data
     base.py          mapping, HTTP, retryable-vs-permanent, persistence
@@ -160,6 +166,7 @@ db/
   schema.sql         original core: tenants, users, sessions, leads, forms, pages
   platform.sql       content, media, SEO, marketing, analytics, ops, compliance
   connectors.sql     connectors, delivery log, object links, OAuth state
+  scale.sql          media jobs, shared rate limits, API version usage, indexes
   tenancy.sql        site status, domains, usage, RLS policies, restricted role
   seed.py            tenant + owner + default form + samples, then provisioning
 public/
@@ -741,6 +748,161 @@ existing install does. The queue, retries and backoff stay in
 `mail.py` either way — the connector only puts one message on the
 wire, which is what makes switching provider a settings change.
 
+### Scaling to a hundred sites and beyond
+
+The design target is ~100 sites with a path to several hundred without
+redesigning anything. What follows is what was measured, not what was
+hoped — on a dataset of 250k leads, 60k content items, 80k activity
+rows across 105 tenants.
+
+#### Heavy work is off the request path
+
+| Job | Where it runs |
+| --- | --- |
+| Image derivatives | `media` worker |
+| Outbound email | `email_outbox` worker |
+| CRM / automation delivery | `connectors` worker |
+| Raw webhooks | `webhook_deliveries` worker |
+| Build hooks, CDN invalidation | `builds` worker |
+| Backups, retention, health, usage | their own workers |
+
+Image processing was the one that was still inline, and it mattered:
+`build_variants` on a 12 MP photo is **1.7 seconds of CPU**, and being
+a synchronous call in an async handler it blocked the whole event loop
+— not just that request. One client uploading a gallery made the admin
+unresponsive for everyone on that worker.
+
+Now the upload validates the bytes, stores the original under a `src/`
+key, inserts the row as `pending` and returns. Measured: **1,700 ms →
+20 ms**, with the event loop never stalling past 11 ms. A worker reads
+the source back, encodes in a thread, swaps the row to the optimized
+primary and deletes the source. Source objects are deliberately not
+servable — the raw upload still carries its EXIF and GPS until the
+worker strips it.
+
+#### Workload separation
+
+`WORKERS` selects which queues a process drains, so heavy jobs get
+their own service and instance size:
+
+```bash
+# web tier — serves requests, drains nothing
+RUN_WORKERS=0
+
+# general worker
+WORKERS=publish,campaigns,builds,health,retention,backups,usage
+
+# image tier — the only CPU-bound worker, so the first worth isolating
+WORKERS=media
+
+# delivery tier
+WORKERS=connectors
+```
+
+The startup log and `/healthz` list which workers run here **and which
+do not** — a queue nobody drains looks exactly like a queue with
+nothing in it, and that is how scheduled content silently stops
+publishing.
+
+#### The app is actually stateless now
+
+Rate limiting was the last piece of per-process state, and it was
+wrong rather than merely imperfect: with `--workers 4` behind three
+tasks, "8 submissions per 10 minutes" was really 96.
+`RATE_LIMIT_BACKEND=postgres` shares the counters in an `UNLOGGED`
+table (the data is worthless after a crash, and skipping the WAL
+roughly halves the write cost); `redis` is there for when the volume
+justifies it. A store outage **fails open** — a limiter that 500s when
+its backend blinks has turned a throttle into an outage.
+
+Everything else that was per-process is now invalidated across
+replicas over `LISTEN/NOTIFY` (`app/cache.py`): the permission matrix,
+tenant resolution, and which email connector a site sends through.
+Invalidation only, never values — a payload is a key, so there is no
+coherency problem to get wrong, and a missed notification degrades to
+the TTL behaviour that was already there.
+
+#### What the indexes actually do at volume
+
+Each index costs write throughput, so only measured wins were added.
+The one that earned its place:
+
+| Query | Before | After |
+| --- | --- | --- |
+| `/api/leads/counts` (sidebar badge, every page load, 62k-lead tenant) | 31 ms bitmap heap scan | **3.9 ms index-only scan** |
+
+`leads_counts_idx` is partial on `NOT is_spam` — what every pipeline
+query filters by — which keeps it a third the size of a full index and
+lets it stay index-only.
+
+Checked and deliberately **not** indexed further, because the existing
+indexes already served them:
+
+| Query | Time |
+| --- | --- |
+| Audit log with an `action LIKE` filter (80k rows) | 0.07 ms |
+| Analytics top pages (30k daily rows) | 0.14 ms |
+| Conversion counts over 30 days | 0.06 ms |
+| Content list by type and status (60k rows) | 0.10 ms |
+| Scheduled-publish scan | 0.02 ms |
+| Portfolio roll-up across 105 sites | 0.37 ms |
+
+That last one is why the portfolio reads `tenant_usage` rather than
+counting live — an hourly roll-up is one indexed join whether there are
+ten sites or three hundred.
+
+The cost of database-enforced isolation, measured: `SET LOCAL` adds
+**+0.107 ms per scoped query**, about 0.5 ms on a page making five of
+them. Worth it.
+
+#### Read replicas
+
+`DATABASE_REPLICA_URLS` (comma separated) adds read pools, round-robined.
+Opt-in per query, never automatic — replication lag means a read
+following its own write can miss it, so only queries that tolerate
+seconds of staleness ask for it. Currently the portfolio roll-up and
+API-version usage. A replica that will not connect logs and falls back
+to the writer rather than stopping the app.
+
+#### Isolating a high-volume tenant
+
+A site outgrowing the rest does not need a platform change:
+
+1. `infra.media_s3_bucket` + `infra.media_public_base_url` — its own
+   bucket and CDN.
+2. `limits` — raise its ceilings alone.
+3. `WORKERS=media` on a dedicated task if it is the one generating the
+   image load.
+4. Its own database: the schema is identical, so it is a dump, a
+   restore and a `DATABASE_URL` — not a fork. (The pool registry for
+   per-tenant routing is not built; see below.)
+
+Platform → Scale reports which tenants are outliers, and says so:
+"*this site is taking 40× the average lead volume; give it its own
+bucket before it affects the others*". Advice appears only when the
+numbers justify it, because advice nobody needs yet is why nobody
+reads the screen when it finally matters.
+
+#### API versioning
+
+A static frontend is deployed on its own cadence and can lag by months,
+so a version cannot be retired when its replacement ships. Every
+`/api/v1` response carries `x-api-version`; a deprecated version adds
+`Deprecation`, `Sunset` (RFC 8594) and a `Warning` explaining the move,
+so a build log surfaces it without anyone reading a changelog. Usage is
+counted per version per site per day, which turns "can we drop v1?"
+into a query.
+
+The admin API is deliberately unversioned — it ships with its own
+frontend, so there is no third party to protect.
+
+#### Connection pooling
+
+The scoped queries wrap `SET LOCAL` and the statement in one
+transaction, which makes them **PgBouncer transaction-mode safe**. Add
+PgBouncer before adding replicas; the Scale screen says so once
+connection use passes 70%.
+
 ### Background workers
 
 Six loops, all in the process where `RUN_WORKERS=1`:
@@ -751,6 +913,7 @@ Six loops, all in the process where `RUN_WORKERS=1`:
 | `campaign_worker` | Sends scheduled campaigns through the shared outbox |
 | `build_worker` | Drains `build_runs` and `cdn_invalidations` with backoff |
 | `health_worker` | Probes health checks whose interval has elapsed; alerts on the second consecutive failure, not the first |
+| `media_worker` | Encodes image derivatives. The only CPU-bound worker, so the first one worth moving to its own service |
 | `connector_worker` | Drains `connector_deliveries` — CRM pushes and automation webhooks. Its own loop, so a slow CRM does not hold up a Zapier hook |
 | `retention_worker` | Applies each tenant's retention policies, plus housekeeping that keeps expired OAuth state, tokens and settled queue rows from accumulating |
 | `backup_worker` | One `pg_dump` a day if none has succeeded in 24 hours — only when `BACKUP_S3_BUCKET` is set |
@@ -892,13 +1055,16 @@ Things to get right at deploy time:
   ALB = 2). `client_ip()` counts back from the right-hand end of
   `X-Forwarded-For`; set it too high and a spoofed header defeats the rate
   limiter and poisons lead attribution.
-- **Rate limiting is per process.** With `--workers 4` the effective limit is 4×,
-  and across Fargate tasks it multiplies again. Move to ElastiCache or an AWS WAF
-  rate-based rule before scaling out.
-- **Set `RUN_WORKERS=0` on every replica but one.** The webhook loop runs inside
-  the app process; `FOR UPDATE SKIP LOCKED` keeps two workers off the same row,
-  but every replica polling is wasted database traffic. Better still, run the
-  worker as its own task, or move the queue to SQS.
+- **Set `RATE_LIMIT_BACKEND=postgres` before running more than one process.**
+  The default `memory` backend counts per process, so with `--workers 4`
+  behind three tasks an "8 per 10 minutes" limit is really 96. `/healthz`
+  reports which backend is in use and whether it is shared.
+- **Set `RUN_WORKERS=0` on every web replica, and use `WORKERS` to split the
+  queues across worker services.** `FOR UPDATE SKIP LOCKED` keeps two workers
+  off the same row, so concurrency is safe — but every replica polling is
+  wasted database traffic, and image encoding wants a different instance size
+  from a health-check poller. The startup log names the queues this process
+  does *not* drain, which is the failure nobody notices otherwise.
 - **Set `TURNSTILE_SECRET` in staging and production.** Without it the only bot
   defence is the honeypot and the fill-time check, and your pipeline fills with
   garbage in week one. The captcha check fails closed if Cloudflare is
@@ -1078,6 +1244,26 @@ column, so it picks the new one up.
 so a trigger derives each from the other in both directions. Writing either one
 alone is safe; that is the point.
 
+**A synchronous CPU-bound call in an async handler blocks the whole
+event loop, not just its own request.** `build_variants` was 1.7
+seconds of Pillow work called directly from the upload route, so one
+client's photo gallery froze every other request on that worker. The
+fix is both halves: move it to a queue *and* run it under
+`asyncio.to_thread`, because even the worker would otherwise stall its
+own loop between jobs.
+
+**`EXPLAIN` on an empty table tells you nothing.** Every hot query
+showed a sequential scan until the tables had realistic row counts —
+Postgres correctly prefers a seq scan on a hundred rows regardless of
+what indexes exist. Populate first, then read the plan; the index
+decisions in `db/scale.sql` come from a 250k-row dataset and note the
+measurement.
+
+**An index-only scan needs the visibility map.** The partial index for
+`/api/leads/counts` was still a bitmap heap scan until `VACUUM`
+populated the map — 12 ms to 3.9 ms after, with no schema change. Worth
+knowing before concluding an index "did not work".
+
 **Two `id` columns in one SELECT is a silent bug.** The connector
 worker joins `connector_deliveries` to `connectors`, and asyncpg lets
 the later duplicate column win when a row becomes a dict — so an
@@ -1125,9 +1311,18 @@ gone.
 - **Per-tenant database routing.** `tenants.infra` can point one site at its
   own bucket and CDN, but not at its own database — `db.py` holds a single
   pool. That is the next step for a site that outgrows shared Postgres.
-- **Distributed rate limiting.** Still an in-process dict — see the caveat
-  above. It is also per-process, not per-tenant, so one noisy site's public
-  traffic shares a budget with the rest.
+- **Per-tenant rate limits.** The limiter is shared across processes now, but
+  the budget is keyed by IP, not by site, so one noisy site's public traffic
+  and another's share the same per-IP budget. Keying by `(tenant, IP)` is a
+  one-line change; deciding the right per-plan numbers is the harder part.
+- **Per-tenant database routing.** `tenants.infra` can point one site at its
+  own bucket and CDN, but `db.py` holds a single writer pool, so moving a
+  tenant to its own database is a dump, a restore and a separate deployment
+  rather than a config change. The pool registry to route per tenant is the
+  missing piece.
+- **Queue depth alerting.** The Scale screen reports oldest-wait per queue and
+  advises on it, but nothing pages anyone — that wants a CloudWatch alarm on
+  the same numbers.
 - **Inbound sync.** Connectors are one-way: the platform pushes to the
   provider. Zoho and HubSpot both offer webhooks that could push status
   changes back, and `connector_links` already stores the mapping needed
