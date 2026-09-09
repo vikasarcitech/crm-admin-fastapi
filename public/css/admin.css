@@ -936,3 +936,23 @@ ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
   border-radius: var(--radius);
 }
 .site-switcher select:hover { border-color: #3d5c64; }
+
+/* ------------------------------------------------ provider catalogue */
+.provider-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(240px, 1fr));
+  gap: 10px;
+  padding: 12px;
+}
+.provider-card {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 13px 14px;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+}
+.provider-card p { margin: 0; font-size: 12.5px; flex: 1; }
+.provider-head { display: flex; align-items: center; gap: 8px; }
+.provider-head strong { flex: 1; }

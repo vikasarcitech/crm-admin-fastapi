@@ -79,6 +79,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/schema.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/platform.sql
 # Tenancy: site status, domains, usage, and the row-level-security
 # policies. Applied last because it walks every table that exists.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/connectors.sql
+# tenancy.sql last: its RLS block walks every table that exists, so
+# re-running it is how connectors.sql's tables get their policy.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/tenancy.sql
 
 # ------------------------------------------------------------------- seed
@@ -98,6 +101,12 @@ cat <<EOF
 
   Test form: http://localhost:${PORT:-8000}/form-example.html
   API docs:  http://localhost:${PORT:-8000}/api/docs
+
+  Integrations:
+    Connector credentials need an encryption key. Without one, any
+    integration that stores a secret refuses to save:
+      python -c "from app.crypto import generate_key; print(generate_key())"
+    then put it in .env as CREDENTIALS_KEY=...
 
   Tenant isolation:
     curl -s http://localhost:${PORT:-8000}/healthz

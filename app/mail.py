@@ -11,6 +11,16 @@ loses a notification. Providers:
 
 Bodies are plain text on purpose: no template engine, nothing to escape,
 and plain text clears spam filters that distrust image-heavy HTML.
+
+**Per-site providers.** A site with an email connector configured
+(app/connectors/email.py — SES, Brevo, SendGrid, Mailchimp or its own
+SMTP relay) sends through that, so each client can send from their own
+account and reputation. Sites without one fall back to the install-wide
+EMAIL_PROVIDER settings, which is what every existing install does.
+
+The queue, the retries and the backoff live here either way; the
+connector only puts one message on the wire. That split is what makes
+switching provider a settings change rather than a rewrite.
 """
 
 from __future__ import annotations
@@ -53,7 +63,59 @@ def _send_smtp(to_email: str, subject: str, body: str) -> None:
         client.quit()
 
 
-async def _deliver(to_email: str, subject: str, body: str) -> None:
+# Which connector a site sends through, cached briefly: the outbox
+# worker would otherwise re-read it for every message in a batch.
+_CONNECTOR_TTL = 60.0
+_connector_cache: dict[int, tuple[float, dict | None]] = {}
+
+
+def invalidate_sender(tenant_id: int | None = None) -> None:
+    """Called when an email connector is saved, so the next message
+    uses the new settings rather than waiting out the cache."""
+    if tenant_id is None:
+        _connector_cache.clear()
+    else:
+        _connector_cache.pop(tenant_id, None)
+
+
+async def _sender_for(tenant_id: int) -> dict | None:
+    """This site's email connector row, or None to use the env fallback."""
+    import time  # noqa: PLC0415
+
+    hit = _connector_cache.get(tenant_id)
+    if hit and hit[0] > time.monotonic():
+        return hit[1]
+
+    from . import db as _db  # noqa: PLC0415
+
+    from .connectors.base import CONNECTOR_COLUMNS  # noqa: PLC0415
+
+    row = None
+    try:
+        row = await _db.fetch_one(
+            f"""SELECT {CONNECTOR_COLUMNS} FROM connectors
+                 WHERE tenant_id = $1 AND kind = 'email' AND is_active
+                   AND status = 'connected'
+                 ORDER BY updated_at DESC LIMIT 1""",
+            tenant_id,
+        )
+    except Exception as exc:
+        # A lookup failure must not stop the mail going out; the
+        # install-wide provider still works.
+        log.error("email connector lookup failed for tenant %s: %s", tenant_id, exc)
+
+    _connector_cache[tenant_id] = (time.monotonic() + _CONNECTOR_TTL, row)
+    return row
+
+
+async def _deliver(to_email: str, subject: str, body: str, tenant_id: int | None = None) -> None:
+    """Send one message. Raises on failure so the caller can retry."""
+    if tenant_id:
+        row = await _sender_for(tenant_id)
+        if row:
+            await _deliver_via_connector(row, to_email, subject, body)
+            return
+
     if settings.email_provider == "smtp":
         if not settings.smtp_host:
             raise RuntimeError("EMAIL_PROVIDER=smtp but SMTP_HOST is not set")
@@ -61,6 +123,28 @@ async def _deliver(to_email: str, subject: str, body: str) -> None:
     else:
         # Dev: the message is visible in the app log instead of being sent.
         log.info("email (log provider) to=%s subject=%r\n%s", to_email, subject, body)
+
+
+async def _deliver_via_connector(row: dict, to_email: str, subject: str, body: str) -> None:
+    import httpx  # noqa: PLC0415
+
+    from .connectors.base import build, mark_result  # noqa: PLC0415
+
+    connector = build(row)
+    async with httpx.AsyncClient() as client:
+        result = await connector.send(client, to_email, subject, body)
+
+    await mark_result(row["id"], result)
+    if not result.ok:
+        # Raised so run_email_batch applies its own backoff, and
+        # flagged non-retryable so a rejected address is not retried
+        # five times over six hours.
+        error = PermanentSendError if not result.retryable else RuntimeError
+        raise error(f"{row['provider']}: {result.error}")
+
+
+class PermanentSendError(RuntimeError):
+    """The provider refused in a way a retry will not fix."""
 
 
 # ---------------------------------------------------------------- queueing
@@ -94,7 +178,7 @@ async def run_email_batch(batch_size: int = 20) -> int:
     """Drain due outbox rows once. Returns how many were attempted."""
     try:
         due = await db.fetch(
-            """SELECT id, to_email, subject, body, attempts
+            """SELECT id, tenant_id, to_email, subject, body, attempts
                  FROM email_outbox
                 WHERE status = 'pending' AND next_attempt_at <= now()
                 ORDER BY next_attempt_at
@@ -108,7 +192,9 @@ async def run_email_batch(batch_size: int = 20) -> int:
 
     for row in due:
         try:
-            await _deliver(str(row["to_email"]), row["subject"], row["body"])
+            await _deliver(
+                str(row["to_email"]), row["subject"], row["body"], row.get("tenant_id")
+            )
             await db.execute(
                 """UPDATE email_outbox
                       SET status = 'delivered', attempts = $2, sent_at = now(), last_error = NULL
@@ -118,7 +204,9 @@ async def run_email_batch(batch_size: int = 20) -> int:
             )
         except Exception as exc:
             attempts = row["attempts"] + 1
-            dead = attempts >= MAX_ATTEMPTS
+            # A refused recipient or an unverified sender will be
+            # refused identically five more times.
+            dead = attempts >= MAX_ATTEMPTS or isinstance(exc, PermanentSendError)
             delay = BACKOFF_MINUTES[min(attempts - 1, len(BACKOFF_MINUTES) - 1)]
             await db.execute(
                 """UPDATE email_outbox

@@ -31,12 +31,14 @@ It creates the venv, installs, applies both schema files, seeds a workspace and
 starts the server. If the database isn't reachable it prints the two `CREATE`
 commands you need and stops. Re-run any time; `./setup.sh --start` skips setup.
 
-The schema lives in three idempotent files applied in order — `db/schema.sql`
+The schema lives in four idempotent files applied in order — `db/schema.sql`
 (the original core: tenants, users, sessions, leads, forms, pages),
 `db/platform.sql` (content, media, SEO, marketing, analytics, publishing,
-operations, compliance) and `db/tenancy.sql` (site status, domains, usage, and
-the row-level-security policies). All three are safe to re-run, and re-running
-`tenancy.sql` is how a newly added table picks up its isolation policy.
+operations, compliance), `db/connectors.sql` (integrations) and
+`db/tenancy.sql` (site status, domains, usage, and the row-level-security
+policies). All four are safe to re-run, and `tenancy.sql` goes **last**
+because its policy block walks every table that exists — re-running it is how
+a newly added table picks up its isolation policy.
 
 **Zero install — Docker:**
 
@@ -54,6 +56,7 @@ pip install -r requirements.txt
 cp .env.example .env                     # set DATABASE_URL at minimum
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/schema.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/platform.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/connectors.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tenancy.sql
 OWNER_EMAIL=you@example.com OWNER_PASSWORD='at-least-12-chars' python -m db.seed
 
@@ -72,6 +75,7 @@ docs are at `/api/docs` in development and disabled in production.
 | **SEO** | Per-item meta title and description with live character indicators, Open Graph and Twitter Card fields, `noindex`/`nofollow`, focus keyword with in-title/in-body checks, Schema.org JSON-LD, sitemap generated on publish (honouring `noindex`), robots.txt editor, folded 404 log with redirect suggestions, 301/302/307/308 redirect manager, breadcrumb config |
 | **Media** | Central library with search, folders and tags, alt/title/caption, magic-byte validation, EXIF stripping, automatic WebP + AVIF derivatives at responsive widths, content-addressed keys with a one-year CDN TTL, usage tracking that blocks deleting a file a page still renders, local or S3 storage |
 | **Access** | Super Admin / Admin / Editor / Author / Contributor plus the original Agent and Viewer CRM roles, 45 named permissions with per-workspace overrides, cross-site membership and session switching, profiles with avatar and social links, optional TOTP 2FA with single-use recovery codes, active-session list with revoke, searchable audit log |
+| **Integrations** | A provider-agnostic connector layer: Zoho CRM, HubSpot, Salesforce and Pipedrive; Zapier, Make and n8n; Amazon SES, Brevo, SendGrid, Mailchimp and SMTP. OAuth 2.0 with PKCE and automatic token refresh, or API keys — encrypted at rest. Per-provider field mapping with a preview, derived idempotency keys, retries with backoff, a full delivery log with replay, and health on every connector. Adding a provider is a registry entry plus one class |
 | **Multi-site** | Create and provision a site from the admin; per-site users, content, media, leads, settings, integrations and API keys; multiple verified domains per site with host-based resolution; per-site CORS derived from those domains; per-site limits and infrastructure overrides; suspend/resume/archive/delete with a lifecycle audit that outlives a deletion; portfolio KPIs and a cross-site user directory; four-layer isolation with a report that says which layers are actually enforced |
 | **Site** | Drag-free nested menu builder (keyboard- and touch-accessible) with links that resolve content by id, reusable blocks for CTAs and banners, site identity, logo, favicon, contact details, SMTP sender, maintenance mode, timezone and locale — all exposed to the frontend through one config endpoint |
 | **Pipeline** | Lead records with status (New → Contacted → Qualified → Proposal → Won → Lost), owner, follow-up date, deal value, notes, merged activity timeline, search, filters, bulk actions and CSV export |
@@ -119,6 +123,15 @@ app/
   content.py         content-type schemas, field coercion, SEO checks, snapshots
   bootstrap.py       provisioning a workspace with its defaults
   publishing.py      sitemaps, build hooks, CDN invalidation
+  crypto.py          Fernet encryption for integration credentials
+  connectors/
+    registry.py      every provider, declared as data
+    base.py          mapping, HTTP, retryable-vs-permanent, persistence
+    crm.py           Zoho, HubSpot, Salesforce, Pipedrive
+    automation.py    Zapier, Make, n8n
+    email.py         SES, Brevo, SendGrid, Mailchimp, SMTP
+    dispatch.py      event → queue → deliver, with idempotency
+    oauth.py         authorization-code flow with state and PKCE
   imaging.py         upload validation, EXIF stripping, WebP/AVIF derivatives
   storage.py         media object storage (local disk or S3/CloudFront)
   totp.py            RFC 6238 two-factor, on the standard library
@@ -133,6 +146,7 @@ app/
     seo.py           redirects, 404 log, sitemap, robots.txt
     site.py          menus, reusable blocks, settings, public site config
     sites.py         multi-site control plane (/api/platform/*)
+    integrations.py  connector CRUD, OAuth, test, mapping, delivery log
     forms.py         form builder, submissions, email templates, conversions
     marketing.py     subscribers, campaigns, announcements, UTM links
     analytics.py     beacon, KPI overview, per-page report, portfolio
@@ -145,6 +159,7 @@ app/
 db/
   schema.sql         original core: tenants, users, sessions, leads, forms, pages
   platform.sql       content, media, SEO, marketing, analytics, ops, compliance
+  connectors.sql     connectors, delivery log, object links, OAuth state
   tenancy.sql        site status, domains, usage, RLS policies, restricted role
   seed.py            tenant + owner + default form + samples, then provisioning
 public/
@@ -159,6 +174,7 @@ public/
     content.js media.js seo.js site.js forms.js
     marketing.js insights.js publishing.js operations.js account.js
     platform.js      the portfolio: sites, domains, limits, isolation report
+    integrations.js  provider catalogue, generated setup forms, mapping
 ```
 
 ### Where the framework does the work
@@ -475,6 +491,27 @@ Site switching is audited twice: as `site.entered` in the target site's own
 activity log, and as `session_switched` in `tenant_events`. A support engineer
 entering a client's site is exactly the event that client will later ask about.
 
+### Integrations
+
+```
+GET    /api/integrations/providers        the catalogue, as data
+GET    /api/integrations                  ?kind=   configured connectors
+POST   /api/integrations                  { provider, config, credentials, events }
+GET    /api/integrations/{id}             status, deliveries, synced records
+PATCH  /api/integrations/{id}             omitted secrets keep their stored value
+DELETE /api/integrations/{id}
+
+POST   /api/integrations/{id}/test        provider's own health check
+POST   /api/integrations/{id}/preview     what mapping would send — sends nothing
+POST   /api/integrations/{id}/send-sample really sends a marked sample lead
+GET    /api/integrations/{id}/deliveries  ?status=&page=
+POST   /api/integrations/{id}/replay      { delivery_id }   dead deliveries only
+POST   /api/integrations/deliveries/retry-failed
+
+POST   /api/integrations/{id}/oauth/start returns the URL to send the browser to
+GET    /api/integrations/oauth/{provider}/callback   public; state is mandatory
+```
+
 ### Public API — what a static frontend calls
 
 No session. Content reads are open unless the site turns on
@@ -593,6 +630,117 @@ incrementally, because a drifting count means a delete either blocks wrongly or
 breaks a live page. Deleting a file that is still referenced returns 409 until
 you pass `?force=true`.
 
+### Integrations: the connector layer
+
+Two outbound paths, and the difference matters:
+
+| | |
+| --- | --- |
+| `webhook_endpoints` | Raw HMAC-signed JSON to a URL you control. **You** build the receiver. Unchanged, still the right answer for a bespoke endpoint. |
+| `connectors` | **We** speak the provider's own API — its auth, its object shape, its field names, its error envelope. |
+
+Both queue deliveries as rows with retries and an idempotency key,
+because a crash mid-send must not lose a lead either way.
+
+`events.emit()` is the single fan-out point, so a connector added later
+needs no new call site — every event the platform already emits, and
+every one added in future, reaches it automatically.
+
+#### Adding a provider
+
+A registry entry (`app/connectors/registry.py`) plus one class. The
+descriptor is data, and everything the admin renders — the setup form,
+the OAuth button, the event picker, the field-mapping table — is
+generated from it. There is no frontend change:
+
+```python
+Provider(
+    key="acme_crm", kind="crm", label="Acme CRM",
+    summary="Push leads into Acme.",
+    auth="api_key",
+    config_fields=(Field("region", "Region", "select", required=True, options=(…)),),
+    credential_fields=(Field("api_key", "API key", "password", required=True, secret=True),),
+    events=("lead.created", "lead.status_changed"),
+    targets=(("last_name", "Last Name"), ("email", "Email")),
+    default_mapping={"last_name": "last_name", "email": "email"},
+)
+```
+
+Then a class with `test()` and `push()`, registered in `import_map.py`.
+
+#### Idempotency
+
+The key is derived from the object, not random: `lead.created:42`. A
+retry after a timeout that actually succeeded, a status change
+following the create, an operator replaying a delivery — all hit the
+same unique index and do nothing, instead of creating a second record
+in someone's CRM. `connector_links` additionally remembers which record
+the provider created, so a later event updates it rather than
+duplicating.
+
+A **delivered** delivery is deliberately not replayable, for the same
+reason. A dead one is reset in place, reusing its key.
+
+#### Retryable vs permanent
+
+A failure is either the provider's problem or ours:
+
+* **retryable** — unreachable, 429, or 5xx. Backoff and try again.
+* **permanent** — the provider understood and refused: a required field
+  is missing, a value is invalid. Retrying sends the identical request
+  and gets the identical refusal, so it is dead on the first attempt
+  and the provider's own message is surfaced to a human.
+
+Getting that wrong in either direction is expensive: retrying a
+permanent failure burns the queue for hours, and giving up on a
+transient one loses a lead.
+
+#### Provider quirks worth knowing
+
+* **Zoho** endpoints are per data centre. A token from
+  `accounts.zoho.eu` does not work against `zohoapis.com`, and the
+  error does not say so. It also returns HTTP 200 with
+  `data[0].status == "error"` for per-record failures, so the body is
+  inspected rather than trusted — and it only issues a refresh token
+  when asked with `access_type=offline&prompt=consent`, then never
+  reissues it.
+* **HubSpot** deduplicates contacts on email but returns 409 rather
+  than merging, so an upsert is search-then-patch. A private-app token
+  is simpler than OAuth and does not expire.
+* **Salesforce** returns the API host in the token response; every org
+  has its own, and calling `login.salesforce.com` for data returns a
+  redirect that looks like a broken client. PKCE is used.
+* **Most CRMs require a last name and have no single-name field**, so
+  `full_name` is split before mapping — "Ana Maria de Souza" keeps its
+  surname intact, and a mononym goes in the last-name slot.
+
+#### Credentials
+
+OAuth refresh tokens and API keys reach systems this platform does not
+own, so a database dump that hands them over is worse than one that
+hands over lead data. They are encrypted with Fernet
+(`app/crypto.py`) under `CREDENTIALS_KEY`, and **without a key the
+platform refuses to store a secret** rather than keeping it in the
+clear — a connector that will not save is a visible problem, a
+plaintext credential is not.
+
+`CREDENTIALS_KEY` takes a comma-separated list for rotation: the first
+encrypts, all decrypt. Prepend a new key, deploy, run
+`app.crypto.rotate_all()`, then drop the old one.
+
+No endpoint returns a credential. Every response goes through
+`_public()`, which drops the encrypted blob and replaces it with the
+*names* of the fields that are set.
+
+#### Email is a connector too
+
+A site with an email connector sends through it, so each client can use
+their own account and sending reputation. Sites without one fall back
+to the install-wide `EMAIL_PROVIDER` settings, which is what every
+existing install does. The queue, retries and backoff stay in
+`mail.py` either way — the connector only puts one message on the
+wire, which is what makes switching provider a settings change.
+
 ### Background workers
 
 Six loops, all in the process where `RUN_WORKERS=1`:
@@ -603,7 +751,8 @@ Six loops, all in the process where `RUN_WORKERS=1`:
 | `campaign_worker` | Sends scheduled campaigns through the shared outbox |
 | `build_worker` | Drains `build_runs` and `cdn_invalidations` with backoff |
 | `health_worker` | Probes health checks whose interval has elapsed; alerts on the second consecutive failure, not the first |
-| `retention_worker` | Applies each tenant's retention policies, plus housekeeping that keeps expired tokens and settled queue rows from accumulating |
+| `connector_worker` | Drains `connector_deliveries` — CRM pushes and automation webhooks. Its own loop, so a slow CRM does not hold up a Zapier hook |
+| `retention_worker` | Applies each tenant's retention policies, plus housekeeping that keeps expired OAuth state, tokens and settled queue rows from accumulating |
 | `backup_worker` | One `pg_dump` a day if none has succeeded in 24 hours — only when `BACKUP_S3_BUCKET` is set |
 
 Each claims work with `FOR UPDATE SKIP LOCKED` or a conditional `UPDATE`, so
@@ -803,6 +952,20 @@ Things to get right at deploy time:
 - **Revoking a cross-site membership ends that account's sessions on that
   site immediately** — otherwise revocation would take effect at next sign-in,
   which is not what anyone means by revoking access.
+- **Integration credentials are encrypted at rest, and the platform
+  refuses to store one without `CREDENTIALS_KEY`.** No endpoint returns
+  a credential — responses carry the *names* of the fields that are
+  set, never the values. Activity log entries record which fields
+  changed, not what they changed to.
+- **The OAuth callback is a public, unauthenticated URL** — it has to
+  be, the provider redirects a browser there. `state` is therefore
+  mandatory, single-use and bound to the tenant; without it anyone
+  could complete a handshake and attach *their* CRM account to
+  *someone else's* site. PKCE is used where the provider supports it.
+- **Automation connectors sign their payloads** with the same
+  HMAC-over-`{timestamp}.{body}` scheme as `webhook_endpoints` when a
+  shared secret is set, so a Zapier or n8n receiver can verify the
+  request came from here.
 - **Check `/healthz` after deploying.** `isolation.rowLevelSecurity` tells you
   whether the database is enforcing tenancy or merely holding inert policies.
   Security that looks present and is not is worse than none, because you plan
@@ -915,6 +1078,20 @@ column, so it picks the new one up.
 so a trigger derives each from the other in both directions. Writing either one
 alone is safe; that is the point.
 
+**Two `id` columns in one SELECT is a silent bug.** The connector
+worker joins `connector_deliveries` to `connectors`, and asyncpg lets
+the later duplicate column win when a row becomes a dict — so an
+unaliased `d.id` quietly became the *connector's* id and every status
+update went to the wrong row. Deliveries were sent and then re-sent
+forever, because none was ever marked delivered. Alias the columns on
+both sides of a join whose tables share names.
+
+**Building a prefixed column list with `.replace(", ", ", c.")` misses
+the ones after a newline.** The separator there is `,\n<spaces>`. That
+left `status` unqualified and ambiguous, and the worker swallowed the
+error as "nothing due". `connector_columns()` builds the list from a
+tuple instead.
+
 **A site's deletion audit has to outlive the site.** Every business table
 cascades from `tenants`, `activity_log` included — so the record of a deletion
 cannot live there. `tenant_events` stores `tenant_slug` as plain text beside a
@@ -951,5 +1128,17 @@ gone.
 - **Distributed rate limiting.** Still an in-process dict — see the caveat
   above. It is also per-process, not per-tenant, so one noisy site's public
   traffic shares a budget with the rest.
+- **Inbound sync.** Connectors are one-way: the platform pushes to the
+  provider. Zoho and HubSpot both offer webhooks that could push status
+  changes back, and `connector_links` already stores the mapping needed
+  to apply them — the missing piece is an inbound endpoint per provider
+  with its own signature verification.
+- **Bounce and complaint handling.** SES publishes these over SNS and
+  `subscribers.status` has `bounced`/`complained` states, but nothing
+  sets them yet.
+- **Automated domain verification for OAuth apps.** The connector
+  layer stores per-site credentials, so each client needs their own
+  app registration with the provider — there is no shared marketplace
+  app.
 - **Field-level permissions.** Permissions are per action, not per field, so
   "an Author may edit the body but not the SEO block" is not expressible.

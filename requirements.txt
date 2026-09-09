@@ -17,6 +17,11 @@ nh3==0.3.7
 # Image validation and responsive WebP/AVIF derivatives (app/imaging.py).
 Pillow==12.3.0
 
-# AWS: S3 media storage, CloudFront invalidation, backup upload. Imported
-# lazily, so an install using MEDIA_STORAGE=local never loads it.
+# AWS: S3 media storage, CloudFront invalidation, backup upload, SES.
+# Imported lazily, so an install using MEDIA_STORAGE=local never loads it.
 boto3==1.43.89
+
+# Fernet encryption for integration credentials at rest (app/crypto.py).
+# OAuth refresh tokens reach systems this platform does not own, so a
+# database dump must not hand them over in the clear.
+cryptography==50.0.1

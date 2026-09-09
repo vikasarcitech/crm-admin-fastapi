@@ -1,6 +1,7 @@
 /* global window, document, api, ui, views, contentViews, mediaViews,
    seoViews, siteViews, formsViews, marketingViews, insightsViews,
-   publishingViews, operationsViews, accountViews, platformViews */
+   publishingViews, operationsViews, accountViews, platformViews,
+   integrationsViews */
 /** Bootstrap + hash router. */
 (function () {
   'use strict';
@@ -56,7 +57,10 @@
     { path: 'operations', label: 'Operations', view: 'operations', group: 'Admin',
       perm: 'ops.view',
       icon: 'M12 8v4l3 2M4 12a8 8 0 1016 0 8 8 0 00-16 0' },
-    { path: 'webhooks', label: 'Webhooks', view: 'webhooks', group: 'Admin',
+    { path: 'integrations', label: 'Integrations', view: 'integrations', group: 'Admin',
+      perm: 'webhooks.manage',
+      icon: 'M10 4v6H4M14 20v-6h6M4 14h6v6M20 10h-6V4' },
+    { path: 'webhooks', label: 'Raw webhooks', view: 'webhooks', group: 'Admin',
       perm: 'webhooks.manage',
       icon: 'M6 8a4 4 0 106 3M12 20a4 4 0 10-2-7' },
     { path: 'activity', label: 'Activity', view: 'activity', group: 'Admin',
@@ -87,6 +91,7 @@
       ...(window.operationsViews || {}),
       ...(window.accountViews || {}),
       ...(window.platformViews || {}),
+      ...(window.integrationsViews || {}),
     };
   }
 

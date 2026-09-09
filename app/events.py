@@ -58,7 +58,25 @@ async def log_activity(
 
 
 async def emit(tenant_id: int, event: str, payload: dict) -> None:
-    """Queue one delivery row per subscribed endpoint."""
+    """Fan one event out to every subscriber.
+
+    Two destinations, deliberately separate:
+
+      webhook_endpoints   raw HMAC-signed JSON to a URL you control
+      connectors          the provider's own API, with field mapping
+
+    Both queue rows with retries. This is the platform's single
+    fan-out point, so a connector added later needs no new call site.
+    """
+    # Typed provider connectors. First, and in its own try, so a
+    # connector problem cannot stop the raw webhooks going out.
+    try:
+        from .connectors import dispatch  # noqa: PLC0415 — avoids a cycle
+
+        await dispatch.queue(tenant_id, event, payload)
+    except Exception as exc:
+        log.error("connector dispatch failed for %s: %s", event, exc)
+
     try:
         endpoints = await db.fetch(
             """SELECT id FROM webhook_endpoints

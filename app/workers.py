@@ -227,6 +227,13 @@ async def run_retention_sweep() -> dict:
     # Housekeeping that is not tenant-configurable: expired tokens and
     # long-settled queue rows serve no purpose and only grow.
     await db.execute("DELETE FROM preview_tokens WHERE expires_at < now() - interval '7 days'")
+    await run_oauth_prune()
+    # Settled connector deliveries: the log is useful for a month, not
+    # forever, and it is the highest-volume table the queue produces.
+    await db.execute(
+        """DELETE FROM connector_deliveries
+            WHERE status = 'delivered' AND created_at < now() - interval '30 days'"""
+    )
     await db.execute("DELETE FROM totp_challenges WHERE expires_at < now() - interval '1 day'")
     await db.execute(
         """DELETE FROM email_outbox
@@ -324,7 +331,30 @@ def all_workers() -> list:
         retention_worker,
         backup_worker,
         usage_worker,
+        connector_worker,
     ]
+
+
+# ========================================================== connectors
+async def connector_worker() -> None:
+    """Drains connector_deliveries — CRM pushes, automation webhooks.
+
+    Its own loop rather than sharing the webhook worker's: a CRM that
+    is slow to respond should not hold up a Zapier hook, and the poll
+    interval is separately tunable.
+    """
+    from .connectors.dispatch import worker  # noqa: PLC0415
+
+    await worker()
+
+
+@_guard("oauth-prune")
+async def run_oauth_prune() -> int:
+    """Expired OAuth handshake state. Short-lived by design, so this
+    only clears rows from abandoned connection attempts."""
+    from .connectors.oauth import prune_states  # noqa: PLC0415
+
+    return await prune_states()
 
 
 # ======================================================= platform usage

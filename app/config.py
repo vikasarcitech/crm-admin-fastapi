@@ -103,6 +103,23 @@ class Settings:
     # pg_dump must be on PATH for database backups to run.
     pg_dump_path: str = os.getenv("PG_DUMP_PATH", "pg_dump")
 
+    # --------------------------------------------------- integrations
+    # Fernet key(s) encrypting connector credentials at rest. Comma
+    # separated for rotation: the first encrypts, all of them decrypt.
+    # Generate one with:
+    #   python -c "from app.crypto import generate_key; print(generate_key())"
+    # Without it, connectors that need a secret refuse to save rather
+    # than storing it in the clear.
+    credentials_key: str = os.getenv("CREDENTIALS_KEY", "")
+
+    # Absolute origin the OAuth providers redirect back to. Must match
+    # the callback URL registered with each provider exactly.
+    oauth_redirect_base: str = os.getenv(
+        "OAUTH_REDIRECT_BASE", os.getenv("APP_BASE_URL", "")
+    ).rstrip("/")
+
+    connector_poll_seconds: int = int(os.getenv("CONNECTOR_POLL_SECONDS", "10"))
+
     # ----------------------------------------------------- isolation
     # Declare the tenant on the connection so the row-level-security
     # policies in db/tenancy.sql apply. Costs one extra round trip per

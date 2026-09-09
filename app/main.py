@@ -29,6 +29,7 @@ from .routers import (
     content,
     deploy,
     forms,
+    integrations,
     intake,
     leads,
     marketing,
@@ -270,6 +271,8 @@ app.include_router(analytics.router)
 app.include_router(analytics.public_router)  # page-view beacon
 app.include_router(deploy.router)
 app.include_router(deploy.public_router)  # versioned public content API
+app.include_router(integrations.router)
+app.include_router(integrations.public_router)  # OAuth callback
 app.include_router(ops.router)
 app.include_router(compliance.router)
 app.include_router(compliance.public_router)  # cookie/consent capture

@@ -1024,3 +1024,63 @@ class SiteLimitsUpdate(BaseModel):
 class DomainCreate(BaseModel):
     domain: str = Field(min_length=3, max_length=253)
     make_primary: bool = False
+
+
+# =====================================================================
+# INTEGRATIONS / CONNECTORS
+# ---------------------------------------------------------------------
+# Which config and credential keys a provider accepts is declared in
+# app/connectors/registry.py and validated against that descriptor, so
+# these models enforce only shape and length.
+# =====================================================================
+
+
+class ConnectorKind(str, Enum):
+    crm = "crm"
+    email = "email"
+    automation = "automation"
+    analytics = "analytics"
+    storage = "storage"
+
+
+class ConnectorCreate(BaseModel):
+    provider: str = Field(min_length=1, max_length=40)
+    name: str | None = Field(default=None, max_length=120)
+    config: dict[str, Any] | None = None
+    # Secrets. Encrypted before they touch the database and never read
+    # back out through the API.
+    credentials: dict[str, Any] | None = None
+    field_mapping: dict[str, str] | None = None
+    events: list[str] | None = Field(default=None, max_length=25)
+
+
+class ConnectorUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    config: dict[str, Any] | None = None
+    # Omitted keeps what is stored; a key present with an empty value
+    # clears it. There is no way to read the current value back.
+    credentials: dict[str, Any] | None = None
+    field_mapping: dict[str, str] | None = None
+    events: list[str] | None = Field(default=None, max_length=25)
+    is_active: bool | None = None
+
+
+class ConnectorTestPayload(BaseModel):
+    """Sample lead used to preview a mapping without sending anything."""
+
+    model_config = ConfigDict(extra="allow")
+
+    full_name: str | None = Field(default=None, max_length=160)
+    email: str | None = Field(default=None, max_length=254)
+    phone: str | None = Field(default=None, max_length=40)
+    company: str | None = Field(default=None, max_length=160)
+    message: str | None = Field(default=None, max_length=4000)
+
+
+class ConnectorReplay(BaseModel):
+    """Re-send a delivery. Off by default because a replay can create a
+    second record in the destination when the first actually landed."""
+
+    delivery_id: int
