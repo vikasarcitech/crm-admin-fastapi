@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .. import db, events, mail, templating
+from .. import db, events, mail, templating, tenancy
 from ..permissions import require_perm
 from ..ratelimit import RateLimiter
 from ..sanitize import clean_html
@@ -107,6 +107,7 @@ async def add_subscriber(
     address = valid_email(payload.email)
     if not address:
         raise HTTPException(400, "That email address is not valid.")
+    await tenancy.enforce_limit(user.tenant_id, "subscribers")
 
     scoped = db.TenantDB(user.tenant_id)
     row = await scoped.fetch_one(
@@ -864,14 +865,11 @@ async def delete_utm_link(
 
 
 # ====================================================== public endpoints
-async def _public_tenant(slug: str) -> dict:
-    row = await db.fetch_one(
-        "SELECT id, name, slug::text AS slug FROM tenants WHERE slug = $1 AND is_active",
-        collapse(slug, 60),
+async def _public_tenant(slug: str | None, request: Request | None = None) -> dict:
+    """Slug first, then the Host header — see tenancy.resolve_public."""
+    return await tenancy.resolve_public(
+        slug, request.headers.get("host") if request else None
     )
-    if not row:
-        raise HTTPException(404, "Unknown site.")
-    return row
 
 
 @public_router.post("/api/public/{tenant_slug}/subscribe", status_code=201)
@@ -967,8 +965,8 @@ def _hash(value: str) -> str:
 
 
 @public_router.get("/api/v1/{tenant_slug}/confirm/{token}")
-async def confirm_subscription(tenant_slug: str, token: str) -> dict:
-    tenant = await _public_tenant(tenant_slug)
+async def confirm_subscription(tenant_slug: str, token: str, request: Request) -> dict:
+    tenant = await _public_tenant(tenant_slug, request)
     row = await db.fetch_one(
         """UPDATE subscribers
               SET status = 'subscribed', confirmed_at = coalesce(confirmed_at, now()),
@@ -1007,13 +1005,13 @@ async def confirm_subscription(tenant_slug: str, token: str) -> dict:
 
 @public_router.get("/api/v1/{tenant_slug}/unsubscribe/{token}")
 @public_router.post("/api/v1/{tenant_slug}/unsubscribe/{token}")
-async def unsubscribe(tenant_slug: str, token: str) -> dict:
+async def unsubscribe(tenant_slug: str, token: str, request: Request) -> dict:
     """One click, no sign-in, no confirmation step.
 
     An unsubscribe that needs a login is an unsubscribe that does not
     happen, and it is the token holder's own address either way.
     """
-    tenant = await _public_tenant(tenant_slug)
+    tenant = await _public_tenant(tenant_slug, request)
     row = await db.fetch_one(
         """UPDATE subscribers
               SET status = 'unsubscribed', unsubscribed_at = now()
@@ -1035,11 +1033,11 @@ async def unsubscribe(tenant_slug: str, token: str) -> dict:
 
 
 @public_router.get("/api/v1/{tenant_slug}/l/{code}")
-async def follow_utm_link(tenant_slug: str, code: str):
+async def follow_utm_link(tenant_slug: str, code: str, request: Request):
     """Resolve a short campaign link and count the click."""
     from fastapi.responses import RedirectResponse  # noqa: PLC0415
 
-    tenant = await _public_tenant(tenant_slug)
+    tenant = await _public_tenant(tenant_slug, request)
     row = await db.fetch_one(
         """UPDATE utm_links SET clicks = clicks + 1, last_click_at = now()
             WHERE tenant_id = $1 AND short_code = $2

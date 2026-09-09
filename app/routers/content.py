@@ -23,7 +23,7 @@ from datetime import datetime, timedelta, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from .. import content as C
-from .. import db, events, publishing
+from .. import db, events, publishing, tenancy
 from ..permissions import permissions_for, require_perm
 from ..sanitize import clean_html, excerpt as html_excerpt
 from ..schemas import (
@@ -484,6 +484,8 @@ async def create_item(
             raise HTTPException(
                 400, f"“{type_row['name']}” is a single-item type. Edit the existing one."
             )
+
+    await tenancy.enforce_limit(user.tenant_id, "content_items")
 
     granted = await permissions_for(user.tenant_id, user.role)
     status = payload.status

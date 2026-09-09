@@ -920,3 +920,19 @@ ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
    the layer beneath is dimmed rather than removed. */
 .drawer[data-depth='1'] { box-shadow: -12px 0 28px rgba(23, 38, 42, .18); }
 .drawer[data-depth='2'] { box-shadow: -12px 0 28px rgba(23, 38, 42, .22); }
+
+/* -------------------------------------------------- site switcher */
+/* Which client am I editing? In a multi-site console that is the
+   question with the most expensive wrong answer, so it sits in the
+   brand block rather than behind a screen. */
+.site-switcher { padding: 0 12px 10px; }
+.site-switcher select {
+  width: 100%;
+  font: 450 12.5px/1 var(--sans);
+  padding: 6px 8px;
+  color: #dfe8e6;
+  background: var(--shell-2);
+  border: 1px solid var(--shell-3);
+  border-radius: var(--radius);
+}
+.site-switcher select:hover { border-color: #3d5c64; }

@@ -1,6 +1,6 @@
 /* global window, document, api, ui, views, contentViews, mediaViews,
    seoViews, siteViews, formsViews, marketingViews, insightsViews,
-   publishingViews, operationsViews, accountViews */
+   publishingViews, operationsViews, accountViews, platformViews */
 /** Bootstrap + hash router. */
 (function () {
   'use strict';
@@ -63,6 +63,10 @@
       icon: 'M12 6v6l4 2M12 3a9 9 0 100 18 9 9 0 000-18' },
     { path: 'settings', label: 'Lead settings', view: 'settings', group: 'Admin',
       icon: 'M4 6h16M4 12h16M4 18h16' },
+
+    { path: 'platform', label: 'All sites', view: 'platform', group: 'Platform',
+      perm: 'sites.manage',
+      icon: 'M4 5h6v6H4zM14 5h6v6h-6zM4 13h6v6H4zM14 13h6v6h-6z' },
   ];
 
   const session = { user: null, counts: {}, permissions: null, unread: 0 };
@@ -82,6 +86,7 @@
       ...(window.publishingViews || {}),
       ...(window.operationsViews || {}),
       ...(window.accountViews || {}),
+      ...(window.platformViews || {}),
     };
   }
 
@@ -197,6 +202,7 @@
     session.user = me.user;
 
     document.getElementById('tenant-name').textContent = me.user.tenantName;
+    renderSiteSwitcher(me.user);
     document.getElementById('user-name').textContent = me.user.name;
     document.getElementById('user-role').textContent = me.user.role;
     document.getElementById('sign-out').addEventListener('click', async () => {
@@ -223,6 +229,53 @@
 
     window.addEventListener('hashchange', render);
     render();
+  }
+
+  /**
+   * Site switcher.
+   *
+   * Only rendered when the account can reach more than one site. In a
+   * multi-site console, "which client am I editing" is the question
+   * that causes real damage when the answer is wrong, so it sits in
+   * the brand block rather than behind a screen.
+   */
+  async function renderSiteSwitcher(user) {
+    let sites;
+    try {
+      ({ sites } = await api.get('/api/platform/my-sites'));
+    } catch (err) {
+      return;   // single-site account, or no access — nothing to switch
+    }
+    if (!sites || sites.length < 2) return;
+
+    const host = document.getElementById('site-switcher');
+    if (!host) return;
+
+    const picker = h('select', {
+      'aria-label': 'Switch site',
+      onchange: async (e) => {
+        const slug = e.target.value;
+        if (slug === user.tenantSlug) return;
+        e.target.disabled = true;
+        try {
+          await api.post(`/api/platform/switch?tenant_slug=${encodeURIComponent(slug)}`, {});
+          // Full reload: every cached list on screen belongs to the
+          // site we just left.
+          window.location.reload();
+        } catch (err) {
+          toast(err.message, 'error');
+          e.target.disabled = false;
+          e.target.value = user.tenantSlug;
+        }
+      },
+    }, sites.map((s) => h('option', {
+      value: s.slug,
+      selected: s.slug === user.tenantSlug,
+      text: s.is_home ? `${s.name} (home)` : s.name,
+    })));
+
+    mount(host, picker);
+    host.classList.remove('hidden');
   }
 
   /**

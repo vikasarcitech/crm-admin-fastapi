@@ -26,7 +26,7 @@ from typing import Any
 import httpx
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import db, events, mail, templating
+from .. import db, events, mail, templating, tenancy
 from ..config import settings
 from ..ratelimit import intake_limiter
 from ..schemas import IntakeRequest, collapse, keep_lines, valid_email
@@ -209,6 +209,12 @@ async def submit(
             WHERE id = $1""",
         form["id"], is_spam,
     )
+
+    # A soft limit on purpose: refusing a real enquiry because the
+    # site is over its monthly lead ceiling would cost the client more
+    # than the overage costs us. The notification makes it visible.
+    if not is_spam:
+        await tenancy.warn_if_over(tenant_id, "leads_per_month")
 
     await events.log_activity(
         tenant_id, "lead.created",

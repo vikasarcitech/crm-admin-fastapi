@@ -31,7 +31,6 @@ from ..permissions import (
 )
 from ..ratelimit import login_limiter
 from ..schemas import (
-    MembershipCreate,
     PasswordChange,
     ProfileUpdate,
     RolePermissionUpdate,
@@ -39,7 +38,6 @@ from ..schemas import (
     TotpVerify,
     collapse,
     keep_lines,
-    valid_email,
 )
 from ..security import (
     CurrentUser,
@@ -510,145 +508,10 @@ async def reset_role_permissions(
 
 
 # ======================================================= site membership
-@router.get("/sites")
-async def list_sites(user: CurrentUser = Depends(require_user)) -> dict:
-    sites = await _sites_for(user.id, user.tenant_id)
-    can_manage = "sites.manage" in await permissions_for(user.tenant_id, user.role)
-    if can_manage:
-        # A Super Admin needs to see every site to grant access to it.
-        sites = await db.fetch(
-            """SELECT t.id, t.slug::text AS slug, t.name, t.primary_domain, t.is_active,
-                      count(DISTINCT u.id)::int AS user_count,
-                      count(DISTINCT l.id)::int AS lead_count
-                 FROM tenants t
-                 LEFT JOIN users u ON u.tenant_id = t.id
-                 LEFT JOIN leads l ON l.tenant_id = t.id AND NOT l.is_spam
-                GROUP BY t.id ORDER BY t.name"""
-        )
-    return {"sites": sites, "canManage": can_manage}
-
-
-@router.post("/sites/switch")
-async def switch_site(
-    tenant_slug: str = Query(max_length=60),
-    user: CurrentUser = Depends(require_user),
-) -> dict:
-    """Re-point the current session at another workspace.
-
-    The session row carries tenant_id, so switching is a single update
-    rather than a new sign-in — and every TenantDB built afterwards is
-    scoped to the new site automatically.
-    """
-    target = await db.fetch_one(
-        "SELECT id, slug::text AS slug, name FROM tenants WHERE slug = $1 AND is_active",
-        collapse(tenant_slug, 60),
-    )
-    if not target:
-        raise HTTPException(404, "Unknown site.")
-
-    if target["id"] != user.tenant_id:
-        granted = await permissions_for(user.tenant_id, user.role)
-        membership = await db.fetch_one(
-            "SELECT role::text AS role FROM tenant_memberships WHERE tenant_id = $1 AND user_id = $2",
-            target["id"], user.id,
-        )
-        if not membership and "sites.manage" not in granted:
-            raise HTTPException(403, "You do not have access to that site.")
-
-    await db.execute(
-        "UPDATE sessions SET tenant_id = $2 WHERE id = $1::uuid", user.session_id, target["id"]
-    )
-    await events.log_activity(
-        target["id"], "site.switched", user_id=user.id,
-        meta={"from": user.tenant_slug, "to": target["slug"]},
-    )
-    return {"ok": True, "site": target}
-
-
-@router.get("/sites/{tenant_slug}/members")
-async def list_members(
-    tenant_slug: str, user: CurrentUser = Depends(require_perm("users.view"))
-) -> dict:
-    target = await db.fetch_one(
-        "SELECT id FROM tenants WHERE slug = $1", collapse(tenant_slug, 60)
-    )
-    if not target:
-        raise HTTPException(404, "Unknown site.")
-    granted = await permissions_for(user.tenant_id, user.role)
-    if target["id"] != user.tenant_id and "sites.manage" not in granted:
-        raise HTTPException(403, "You do not have access to that site.")
-
-    rows = await db.fetch(
-        """SELECT m.id, m.role::text AS role, m.created_at,
-                  u.id AS user_id, u.email, u.display_name,
-                  g.display_name AS granted_by_name
-             FROM tenant_memberships m
-             JOIN users u ON u.id = m.user_id
-             LEFT JOIN users g ON g.id = m.granted_by
-            WHERE m.tenant_id = $1 ORDER BY u.display_name""",
-        target["id"],
-    )
-    return {"members": rows}
-
-
-@router.post("/sites/members", status_code=201)
-async def grant_membership(
-    payload: MembershipCreate,
-    request: Request,
-    user: CurrentUser = Depends(require_perm("sites.manage")),
-) -> dict:
-    email = valid_email(payload.user_email)
-    if not email:
-        raise HTTPException(400, "That email address is not valid.")
-
-    target = await db.fetch_one(
-        "SELECT id, name FROM tenants WHERE slug = $1", collapse(payload.tenant_slug, 60)
-    )
-    if not target:
-        raise HTTPException(404, "Unknown site.")
-
-    account = await db.fetch_one(
-        "SELECT id, display_name FROM users WHERE email = $1 AND is_active ORDER BY id LIMIT 1",
-        email,
-    )
-    if not account:
-        raise HTTPException(404, "No active account uses that email address.")
-
-    role = payload.role if isinstance(payload.role, str) else payload.role.value
-    if role not in DEFAULTS:
-        raise HTTPException(400, "Unknown role.")
-
-    row = await db.fetch_one(
-        """INSERT INTO tenant_memberships (tenant_id, user_id, role, granted_by)
-           VALUES ($1, $2, $3::user_role, $4)
-           ON CONFLICT (tenant_id, user_id) DO UPDATE SET role = EXCLUDED.role
-           RETURNING id, role::text AS role, created_at""",
-        target["id"], account["id"], role, user.id,
-    )
-    await events.log_activity(
-        target["id"], "site.member_added", user_id=user.id,
-        meta={"user": email, "role": role}, ip=db.to_inet(client_ip(request)),
-    )
-    return {"member": {**row, "user_id": account["id"], "email": email,
-                       "display_name": account["display_name"]}}
-
-
-@router.delete("/sites/members/{membership_id}")
-async def revoke_membership(
-    membership_id: int, user: CurrentUser = Depends(require_perm("sites.manage"))
-) -> dict:
-    removed = await db.fetch(
-        "DELETE FROM tenant_memberships WHERE id = $1 RETURNING tenant_id, user_id",
-        membership_id,
-    )
-    if not removed:
-        raise HTTPException(404, "That membership no longer exists.")
-    # Any session that had switched into the site loses it immediately.
-    await db.execute(
-        "DELETE FROM sessions WHERE user_id = $1 AND tenant_id = $2",
-        removed[0]["user_id"], removed[0]["tenant_id"],
-    )
-    return {"ok": True}
+# Site switching, membership and the portfolio moved to
+# app/routers/sites.py (/api/platform/*), where they sit next to site
+# creation and the lifecycle actions. Two code paths for "switch site"
+# would have meant one of them missing the audit entry.
 
 
 # ============================================================= audit log

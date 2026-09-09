@@ -18,7 +18,7 @@
       api.get('/api/profile'),
       api.get('/api/sessions'),
       api.get('/api/roles').catch(() => null),
-      api.get('/api/sites').catch(() => null),
+      api.get('/api/platform/my-sites').catch(() => null),
     ]);
 
     ctx.setHead('Account', `${profile.display_name} · ${profile.role}`);
@@ -350,33 +350,27 @@
         toolbar([
           h('span.muted', {
             text: data.canManage
-              ? 'Every site on this install.'
+              ? 'Every site on this install — you can switch into any of them.'
               : 'Sites you have access to.',
           }),
           h('div.spacer'),
           data.canManage
-            ? actionButton('Grant access', () => grantAccess(ctx, data), { small: true, primary: true })
+            ? h('a.btn.btn-sm', { href: '#/platform', text: 'Manage the portfolio' })
             : null,
         ]),
         table([
           { label: 'Site', cell: (s) => [h('div.cell-name', { text: s.name }),
             h('div.cell-meta', { text: s.slug })] },
-          data.canManage
-            ? { label: 'Domain', cell: (s) => s.primary_domain || '—' }
-            : { label: 'Your role', cell: (s) => badge(s.role, 'neutral') },
-          data.canManage
-            ? { label: 'Users', class: 'cell-mono', cell: (s) => number(s.user_count) }
-            : null,
-          data.canManage
-            ? { label: 'Leads', class: 'cell-mono', cell: (s) => number(s.lead_count) }
-            : null,
+          { label: 'Your role', cell: (s) => badge(s.role, s.is_home ? 'ok' : 'neutral') },
+          { label: 'Access', cell: (s) => (s.is_home ? 'home workspace'
+            : data.canManage && s.role === null ? 'platform admin' : 'granted') },
           {
             label: '',
             cell: (s) => h('div.row-actions', {}, [
-              s.slug === profile.sites?.find((x) => x.is_home)?.slug
+              s.is_current
                 ? badge('current', 'ok')
                 : actionButton('Switch to', async () => {
-                  await api.post(`/api/sites/switch?tenant_slug=${s.slug}`, {});
+                  await api.post(`/api/platform/switch?tenant_slug=${s.slug}`, {});
                   toast(`Switched to ${s.name}.`);
                   window.location.reload();
                 }, { small: true }),
@@ -385,17 +379,18 @@
                 : null,
             ]),
           },
-        ].filter(Boolean), data.sites, { empty: 'No sites.' }),
+        ], data.sites, { empty: 'No sites.' }),
       ]),
       panelBody(h('p.muted', {
         text: 'Switching re-points your current session at that site — every screen '
-          + 'then shows its data. Only a Super Admin can grant access to another site.',
+          + 'then shows its data, and it is logged in that site’s own audit trail. '
+          + 'Only a Super Admin can grant access to another site.',
       })),
     ]);
   }
 
   async function showMembers(ctx, siteRow) {
-    const { members } = await api.get(`/api/sites/${siteRow.slug}/members`);
+    const { members } = await api.get(`/api/platform/sites/${siteRow.slug}/members`);
     openDrawer({
       title: `${siteRow.name} — members`,
       subtitle: 'Accounts granted access to this site in addition to their home workspace.',
@@ -407,7 +402,7 @@
         {
           label: '',
           cell: (m) => confirmButton('Revoke', async () => {
-            await api.del(`/api/sites/members/${m.id}`);
+            await api.del(`/api/platform/members/${m.id}`);
             toast('Access revoked and their sessions on this site ended.');
             ctx.reload();
           }, { small: true }),
@@ -416,31 +411,8 @@
     });
   }
 
-  function grantAccess(ctx, data) {
-    formDrawer({
-      title: 'Grant access to a site',
-      fields: [
-        { name: 'user_email', label: 'Existing account email',
-          control: textInput('user_email', '') },
-        { name: 'tenant_slug', label: 'Site',
-          control: select(data.sites.map((s) => [s.slug, s.name]), '', null) },
-        { name: 'role', label: 'Role on that site',
-          control: select([['admin', 'Admin'], ['editor', 'Editor'], ['author', 'Author'],
-            ['contributor', 'Contributor'], ['agent', 'Agent (CRM)'],
-            ['viewer', 'Viewer']], 'editor', null) },
-      ],
-      onSave: async (values) => {
-        await api.post('/api/sites/members', {
-          user_email: values.user_email,
-          tenant_slug: values.tenant_slug,
-          role: values.role,
-        });
-        toast('Access granted.');
-        ctx.reload();
-      },
-      saveLabel: 'Grant',
-    });
-  }
+  // Granting cross-site access moved to the Platform screen, next to
+  // site creation — it is a portfolio action, not an account one.
 
   window.accountViews = { account };
 }());

@@ -22,7 +22,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .. import db, events, templating
+from .. import db, events, templating, tenancy
 from ..content import slugify
 from ..permissions import require_perm
 from ..ratelimit import RateLimiter
@@ -747,10 +747,9 @@ async def record_conversion(
     ip = client_ip(request)
     conversion_limiter.check(f"conv:{ip or 'unknown'}")
 
-    tenant = await db.fetch_one(
-        "SELECT id FROM tenants WHERE slug = $1 AND is_active", collapse(tenant_slug, 60)
-    )
-    if not tenant:
+    try:
+        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+    except HTTPException:
         # Same answer as success: a 404 here would enumerate tenants.
         return {"ok": True}
 

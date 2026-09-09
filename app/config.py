@@ -103,6 +103,14 @@ class Settings:
     # pg_dump must be on PATH for database backups to run.
     pg_dump_path: str = os.getenv("PG_DUMP_PATH", "pg_dump")
 
+    # ----------------------------------------------------- isolation
+    # Declare the tenant on the connection so the row-level-security
+    # policies in db/tenancy.sql apply. Costs one extra round trip per
+    # scoped query. 0 falls back to the bound-$1 scoping alone.
+    # Only bites when DATABASE_URL uses a non-superuser, non-BYPASSRLS
+    # role — /healthz reports whether it is actually in force.
+    pg_rls: bool = os.getenv("PG_RLS", "1") == "1"
+
     # -------------------------------------------------------- privacy
     # Salt for the rotating visitor hash used by the analytics beacon.
     # Rotate it to sever any link between old and new visitor counts.

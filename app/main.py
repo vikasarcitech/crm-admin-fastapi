@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -18,7 +19,7 @@ from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
 from starlette.exceptions import HTTPException as StarletteHTTPException
 
-from . import db, events, mail, workers
+from . import db, events, mail, tenancy, workers
 from .config import settings
 from .routers import (
     admin,
@@ -36,6 +37,7 @@ from .routers import (
     pages,
     seo,
     site,
+    sites,
     users,
 )
 
@@ -72,6 +74,16 @@ async def lifespan(app: FastAPI):
     await db.connect()
     await db.fetch("SELECT 1")
     log.info("database ready")
+
+    isolation = await db.rls_status()
+    if isolation["effective"]:
+        log.info(
+            "tenant isolation: application scope + row-level security "
+            "(role %s, %d policies)",
+            isolation["role"], isolation["policies"],
+        )
+    else:
+        log.warning("tenant isolation: application scope only — %s", isolation["warning"])
 
     tasks: list[asyncio.Task] = []
     if settings.run_workers:
@@ -123,17 +135,49 @@ async def security_headers(request: Request, call_next):
     return response
 
 
-# --------------------------------------------------- CORS for intake only
-@app.middleware("http")
-async def public_form_cors(request: Request, call_next):
-    """The admin API stays same-origin; only the intake path is cross-origin.
+# ------------------------------------------------- CORS, scoped per site
+# Only the public paths are cross-origin; the admin API stays
+# same-origin. A blanket CORSMiddleware would open the authenticated
+# API to every listed origin.
+PUBLIC_PREFIXES = ("/api/public/", "/api/v1/")
 
-    A blanket CORSMiddleware would open the authenticated API too."""
+# /api/public/{slug}/… and /api/v1/{slug}/… — the slug is the third
+# segment. /api/v1/preview/{token} has no slug and is not cross-origin.
+TENANT_IN_PATH = re.compile(r"^/api/(?:public|v1)/([a-z0-9][a-z0-9-]{0,59})(?:/|$)")
+
+
+@app.middleware("http")
+async def public_cors(request: Request, call_next):
+    """Allow a site's own verified domains, not one shared list.
+
+    The original single PUBLIC_FORM_ORIGINS list was install-wide,
+    which in a multi-site platform means any client's frontend could
+    post to any other client's forms. Origins now come from the
+    resolved site's verified domains; PUBLIC_FORM_ORIGINS remains as a
+    development escape hatch and for frontends whose domain is not
+    registered yet.
+    """
+    path = request.url.path
+    is_public = path.startswith(PUBLIC_PREFIXES)
     origin = request.headers.get("origin")
-    is_public = request.url.path.startswith("/api/public")
-    allowed = origin and is_public and (
-        "*" in settings.public_form_origins or origin in settings.public_form_origins
-    )
+
+    allowed = False
+    if origin and is_public:
+        if "*" in settings.public_form_origins:
+            allowed = True
+        elif origin in settings.public_form_origins:
+            allowed = True
+        else:
+            match = TENANT_IN_PATH.match(path)
+            if match:
+                try:
+                    tenant = await tenancy.by_slug(match.group(1))
+                    if tenant and tenant["is_active"]:
+                        allowed = origin in await tenancy.allowed_origins(tenant["id"])
+                except Exception as exc:
+                    # A resolution failure must not turn every public
+                    # request into a 500; it just means "not allowed".
+                    log.error("CORS origin check failed for %s: %s", path, exc)
 
     if request.method == "OPTIONS" and is_public:
         response = Response(status_code=204)
@@ -144,7 +188,14 @@ async def public_form_cors(request: Request, call_next):
         response.headers["access-control-allow-origin"] = origin
         response.headers["vary"] = "Origin"
         response.headers["access-control-allow-headers"] = "content-type"
+        response.headers["access-control-allow-methods"] = "GET, POST, OPTIONS"
         response.headers["access-control-max-age"] = "86400"
+    elif is_public:
+        # Say why, once, in the log — a silent CORS failure is the
+        # single most time-consuming thing to debug from the browser.
+        if origin:
+            log.info("CORS refused origin %s for %s", origin, path)
+        response.headers["vary"] = "Origin"
     return response
 
 
@@ -178,7 +229,21 @@ async def unhandled_error(request: Request, exc: Exception):
 # ---------------------------------------------------------------- routes
 @app.get("/healthz")
 async def healthz() -> dict:
-    return {"ok": True}
+    """Liveness, plus whether database-enforced isolation is in force.
+
+    Reported here so a deployment check can assert it rather than
+    discovering months later that the app connects as a superuser and
+    every RLS policy has been inert the whole time.
+    """
+    isolation = await db.rls_status()
+    return {
+        "ok": True,
+        "isolation": {
+            "applicationScope": True,
+            "rowLevelSecurity": isolation["effective"],
+            "warning": isolation["warning"],
+        },
+    }
 
 
 app.include_router(intake.router)  # unauthenticated
@@ -192,6 +257,7 @@ app.include_router(seo.public_router)  # sitemap, robots, redirect lookup
 app.include_router(media.router)
 app.include_router(media.public_router)  # local media serving
 app.include_router(users.router)
+app.include_router(sites.router)  # multi-site control plane
 app.include_router(site.router)
 app.include_router(site.public_router)  # public site config, menus
 app.include_router(forms.router)

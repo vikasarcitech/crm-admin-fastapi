@@ -7,7 +7,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
-from .. import db, events
+from .. import db, events, tenancy
 from ..schemas import SettingUpdate, UserCreate, UserRole, UserUpdate, WebhookCreate
 from ..security import (
     CurrentUser,
@@ -136,6 +136,8 @@ async def create_user(
 ) -> dict:
     if payload.role in ELEVATED_ROLES and user.role not in ELEVATED_ROLES:
         raise HTTPException(403, "Only an owner can add owners or super admins.")
+
+    await tenancy.enforce_limit(user.tenant_id, "users")
 
     scoped = db.TenantDB(user.tenant_id)
     existing = await scoped.fetch_one(

@@ -25,7 +25,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 
-from .. import db, events
+from .. import db, events, tenancy
 from ..permissions import require_perm
 from ..ratelimit import RateLimiter
 from ..schemas import (
@@ -150,11 +150,13 @@ async def record_consent(
     ip = client_ip(request)
     consent_limiter.check(f"consent:{ip or 'unknown'}")
 
-    tenant = await db.fetch_one(
-        "SELECT id FROM tenants WHERE slug = $1 AND is_active", collapse(tenant_slug, 60)
-    )
-    if not tenant:
-        return {"ok": True}  # same answer either way; no tenant enumeration
+    try:
+        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+    except HTTPException:
+        # Same answer either way: a 404 here would enumerate the
+        # portfolio, and a suspended site should not error a visitor's
+        # cookie banner.
+        return {"ok": True}
 
     address = valid_email(payload.email) if payload.email else None
     purpose = collapse(payload.purpose, 80) or "unspecified"

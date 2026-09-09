@@ -77,6 +77,9 @@ psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/schema.sql
 # Both files are idempotent, and platform.sql extends what schema.sql
 # creates, so the order matters.
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/platform.sql
+# Tenancy: site status, domains, usage, and the row-level-security
+# policies. Applied last because it walks every table that exists.
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -q -f db/tenancy.sql
 
 # ------------------------------------------------------------------- seed
 if [ -z "${OWNER_EMAIL:-}" ] || [ "${OWNER_EMAIL}" = "admin@example.com" ]; then
@@ -95,6 +98,12 @@ cat <<EOF
 
   Test form: http://localhost:${PORT:-8000}/form-example.html
   API docs:  http://localhost:${PORT:-8000}/api/docs
+
+  Tenant isolation:
+    curl -s http://localhost:${PORT:-8000}/healthz
+    Row-level security needs a non-superuser role. To turn it on:
+      psql "$DATABASE_URL" -c "ALTER ROLE crm_app PASSWORD 'choose-one'"
+      then set DATABASE_URL=postgres://crm_app:choose-one@localhost:5432/crm
 
   Frontend API for this workspace:
     Config:   http://localhost:${PORT:-8000}/api/v1/${SEED_TENANT_SLUG:-demo}/config

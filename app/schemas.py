@@ -961,3 +961,66 @@ class RetentionPolicyUpdate(BaseModel):
         if value not in {"delete", "anonymize"}:
             raise ValueError("must be delete or anonymize")
         return value
+
+
+# =====================================================================
+# MULTI-SITE CONTROL PLANE
+# ---------------------------------------------------------------------
+# Slug, domain and limit-key validation lives in app/tenancy.py, where
+# it can check reserved names and what is already claimed across the
+# install. These models enforce shape and length first.
+# =====================================================================
+
+
+class TenantStatus(str, Enum):
+    active = "active"
+    suspended = "suspended"
+    archived = "archived"
+
+
+class SiteCreate(BaseModel):
+    """Provision a new site with its first owner."""
+
+    name: str = Field(min_length=1, max_length=120)
+    slug: str | None = Field(default=None, max_length=60)
+    domain: str | None = Field(default=None, max_length=253)
+    owner_email: str = Field(max_length=254)
+    owner_name: str | None = Field(default=None, max_length=120)
+    # Same floor as every other password on the platform.
+    owner_password: str = Field(min_length=12, max_length=200)
+    plan: str = Field(default="standard", max_length=40)
+    limits: dict[str, Any] | None = None
+    notes: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("owner_email")
+    @classmethod
+    def normalise_email(cls, value: str) -> str:
+        return value.strip().lower()
+
+
+class SiteUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    plan: str | None = Field(default=None, max_length=40)
+    notes: str | None = Field(default=None, max_length=1000)
+    # Per-site infrastructure overrides (bucket prefix, CDN id, build
+    # target) — how one busy site is scaled without a platform change.
+    infra: dict[str, Any] | None = None
+
+
+class SiteStatusUpdate(BaseModel):
+    status: TenantStatus
+    reason: str | None = Field(default=None, max_length=500)
+
+
+class SiteLimitsUpdate(BaseModel):
+    """Replaces the whole override object; an omitted key falls back to
+    the platform default rather than staying at its old value."""
+
+    limits: dict[str, Any] = Field(default_factory=dict)
+
+
+class DomainCreate(BaseModel):
+    domain: str = Field(min_length=3, max_length=253)
+    make_primary: bool = False

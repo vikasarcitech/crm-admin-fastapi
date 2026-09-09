@@ -6,7 +6,10 @@ step, no framework, no jQuery.
 
 Built for the case where one control plane serves many client sites: every row
 carries a `tenant_id`, every query is scoped by it, and a new client is a row in
-`tenants` rather than another server to patch.
+`tenants` rather than another server to patch. A Super Admin creates and
+provisions a site from the admin itself — tenant, owner, content types,
+menus, templates and defaults — then manages the whole portfolio from one
+screen.
 
 It is **API-first**: the admin edits content here, and static frontends read it
 from a versioned public API (`/api/v1/…`) at build time or runtime. Publishing
@@ -28,10 +31,12 @@ It creates the venv, installs, applies both schema files, seeds a workspace and
 starts the server. If the database isn't reachable it prints the two `CREATE`
 commands you need and stops. Re-run any time; `./setup.sh --start` skips setup.
 
-The schema lives in two idempotent files applied in order — `db/schema.sql`
-(the original core: tenants, users, sessions, leads, forms, pages) and
+The schema lives in three idempotent files applied in order — `db/schema.sql`
+(the original core: tenants, users, sessions, leads, forms, pages),
 `db/platform.sql` (content, media, SEO, marketing, analytics, publishing,
-operations, compliance). Both are safe to re-run.
+operations, compliance) and `db/tenancy.sql` (site status, domains, usage, and
+the row-level-security policies). All three are safe to re-run, and re-running
+`tenancy.sql` is how a newly added table picks up its isolation policy.
 
 **Zero install — Docker:**
 
@@ -49,6 +54,7 @@ pip install -r requirements.txt
 cp .env.example .env                     # set DATABASE_URL at minimum
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/schema.sql
 psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/platform.sql
+psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f db/tenancy.sql
 OWNER_EMAIL=you@example.com OWNER_PASSWORD='at-least-12-chars' python -m db.seed
 
 uvicorn app.main:app --reload            # http://localhost:8000
@@ -66,6 +72,7 @@ docs are at `/api/docs` in development and disabled in production.
 | **SEO** | Per-item meta title and description with live character indicators, Open Graph and Twitter Card fields, `noindex`/`nofollow`, focus keyword with in-title/in-body checks, Schema.org JSON-LD, sitemap generated on publish (honouring `noindex`), robots.txt editor, folded 404 log with redirect suggestions, 301/302/307/308 redirect manager, breadcrumb config |
 | **Media** | Central library with search, folders and tags, alt/title/caption, magic-byte validation, EXIF stripping, automatic WebP + AVIF derivatives at responsive widths, content-addressed keys with a one-year CDN TTL, usage tracking that blocks deleting a file a page still renders, local or S3 storage |
 | **Access** | Super Admin / Admin / Editor / Author / Contributor plus the original Agent and Viewer CRM roles, 45 named permissions with per-workspace overrides, cross-site membership and session switching, profiles with avatar and social links, optional TOTP 2FA with single-use recovery codes, active-session list with revoke, searchable audit log |
+| **Multi-site** | Create and provision a site from the admin; per-site users, content, media, leads, settings, integrations and API keys; multiple verified domains per site with host-based resolution; per-site CORS derived from those domains; per-site limits and infrastructure overrides; suspend/resume/archive/delete with a lifecycle audit that outlives a deletion; portfolio KPIs and a cross-site user directory; four-layer isolation with a report that says which layers are actually enforced |
 | **Site** | Drag-free nested menu builder (keyboard- and touch-accessible) with links that resolve content by id, reusable blocks for CTAs and banners, site identity, logo, favicon, contact details, SMTP sender, maintenance mode, timezone and locale — all exposed to the frontend through one config endpoint |
 | **Pipeline** | Lead records with status (New → Contacted → Qualified → Proposal → Won → Lost), owner, follow-up date, deal value, notes, merged activity timeline, search, filters, bulk actions and CSV export |
 | **Forms** | Admin-managed field builder with validation, lead mapping, honeypot, fill-time and Turnstile checks, per-form success/redirect, conditional notification rules, autoresponders from templates, full submission log with formula-safe CSV export, conversion events for forms, CTAs, phone, email and WhatsApp |
@@ -99,7 +106,8 @@ sitemap.
 app/
   main.py            app wiring, lifespan, middleware, error shape, static SPA
   config.py          settings from the environment
-  db.py              asyncpg pool, type codecs, TenantDB scoping
+  db.py              asyncpg pool, type codecs, TenantDB scoping, RLS probe
+  tenancy.py         the control plane: resolution, lifecycle, domains, limits
   security.py        sessions, bcrypt, CSRF, role dependencies
   permissions.py     role → permission matrix, overrides, require_perm()
   ratelimit.py       fixed-window limiter (in-process — see caveats)
@@ -124,6 +132,7 @@ app/
     media.py         library, upload, folders, usage, local file serving
     seo.py           redirects, 404 log, sitemap, robots.txt
     site.py          menus, reusable blocks, settings, public site config
+    sites.py         multi-site control plane (/api/platform/*)
     forms.py         form builder, submissions, email templates, conversions
     marketing.py     subscribers, campaigns, announcements, UTM links
     analytics.py     beacon, KPI overview, per-page report, portfolio
@@ -136,6 +145,7 @@ app/
 db/
   schema.sql         original core: tenants, users, sessions, leads, forms, pages
   platform.sql       content, media, SEO, marketing, analytics, ops, compliance
+  tenancy.sql        site status, domains, usage, RLS policies, restricted role
   seed.py            tenant + owner + default form + samples, then provisioning
 public/
   css/admin.css      one stylesheet, design tokens at the top
@@ -148,6 +158,7 @@ public/
     pages.js         the block builder
     content.js media.js seo.js site.js forms.js
     marketing.js insights.js publishing.js operations.js account.js
+    platform.js      the portfolio: sites, domains, limits, isolation report
 ```
 
 ### Where the framework does the work
@@ -172,13 +183,120 @@ roles slotted below `admin` so an Editor cannot pass `require_role("admin")`.
 
 ### Multi-tenancy
 
-`TenantDB` binds `$1` to the tenant id so a call site cannot write a query
-without the scope. Verified: signing in to tenant B and requesting tenant A's
-lead by id returns 404, patching it returns 404, and a bulk delete of A's ids
-from B's session affects zero rows.
+The platform is a control plane, not a template you deploy per client. Every
+table except `tenants` itself carries a `tenant_id`, and isolation is enforced
+at four layers.
 
-For harder isolation, the next step is PostgreSQL row-level security with
-`SET LOCAL app.tenant_id` per transaction. The schema already fits it.
+**1. Authentication.** A session row carries `tenant_id`, so what a session can
+reach is decided at sign-in rather than per request. Suspending a site deletes
+its sessions, and `optional_user` additionally refuses any session whose site
+is not active — otherwise "suspended" would mean "suspended at next sign-in".
+
+**2. Authorization.** The portfolio is gated on `sites.manage`, which
+`_SITE_ADMIN` deliberately excludes. A site's own Owner has every permission
+*for their site* and cannot list, create, enter or administer another one.
+
+**3. API.** Every public route resolves its tenant through
+`tenancy.resolve_public` — slug first, then the `Host` header — so a suspended
+site answers 503 (it exists; a 404 would cost the client their rankings) and an
+archived one answers 404. CORS is per-site: allowed origins come from that
+site's *verified* domains, not from one install-wide list. The original single
+`PUBLIC_FORM_ORIGINS` meant any client's frontend could post to any other
+client's forms; it now survives only as a development escape hatch.
+
+**4. Data access.** `TenantDB` binds `$1` to the tenant id, so a call site
+cannot write a scoped query without the scope. Underneath it,
+`db/tenancy.sql` puts a `tenant_isolation` policy on all 60 tenant tables with
+`FORCE ROW LEVEL SECURITY`, and every `TenantDB` call declares its tenant with
+`SET LOCAL app.tenant_id` inside a transaction. A query that forgets its WHERE
+clause entirely still returns only its own rows, and a write that forges
+another tenant's id is refused by the database.
+
+Verified: signing in to site B and requesting site A's content by id returns
+404 for read, patch and delete; a bulk action on A's ids from B's session
+affects zero rows; a scoped query with no tenant filter at all returns only its
+own tenant's rows; and forging another tenant's id on INSERT or moving a row
+out with UPDATE both raise a policy violation.
+
+#### Row-level security needs the right database role
+
+This is the part that is easy to get wrong and expensive to believe:
+**PostgreSQL exempts superusers and `BYPASSRLS` roles from every policy**, and
+`FORCE ROW LEVEL SECURITY` only reaches the table *owner*. `setup.sh` creates
+`crm` as a superuser (it needs to, for `CREATE EXTENSION`), so with the default
+`DATABASE_URL` the policies are installed and completely inert.
+
+`db/tenancy.sql` therefore also creates `crm_app` — no ownership, no superuser,
+no way to opt out of a policy. Give it a password from your secret store and
+point the app at it:
+
+```bash
+psql "$DATABASE_URL" -c "ALTER ROLE crm_app PASSWORD '<from Secrets Manager>'"
+# then
+DATABASE_URL=postgres://crm_app:<pw>@host:5432/crm
+```
+
+Nothing is committed with a password, and nothing silently assumes this was
+done. `GET /healthz` reports it, the startup log says which layers are active,
+and Platform → Isolation shows it layer by layer:
+
+```json
+{ "ok": true,
+  "isolation": { "applicationScope": true, "rowLevelSecurity": false,
+                 "warning": "Connected as crm, which bypasses every policy…" } }
+```
+
+Application-layer scoping is unconditional either way. RLS is defence in depth
+against a bug in it, not a replacement for it.
+
+The policy is *scoped-when-declared*: an undeclared connection is
+unrestricted, which is what keeps the worker loops, portfolio reporting,
+migrations and `pg_dump` working. `TenantDB` always declares, so every
+tenant-scoped path is covered; the raw `db.fetch`/`db.execute` helpers
+deliberately do not, and those call sites are the ones to review by hand.
+
+### Creating and scaling a site
+
+Creating a site is provisioning, in one call: the tenant row, its owner, a
+starter contact form, six content types, two taxonomies, two menus, four email
+templates, nine settings groups and seven retention policies. The tenant, owner
+and form go in one transaction (a failure part-way must not leave an ownerless
+workspace); the defaults follow after it commits, because a site missing a
+default menu is usable and one missing its owner is not.
+
+Each site carries its own **limits** (`tenants.limits`) and **infrastructure
+overrides** (`tenants.infra`), which is what "scale one site without changing
+the platform" comes down to:
+
+| Lever | Effect |
+| --- | --- |
+| `limits.media_bytes`, `media_files` | Checked before derivatives are built, so a refusal does not burn the CPU first |
+| `limits.content_items`, `users`, `api_keys`, `subscribers`, `domains` | Refused with 402 at the ceiling |
+| `limits.leads_per_month`, `emails_per_month` | **Soft**: notified, never blocked — losing a client's enquiry to a quota costs them more than the overage costs you |
+| `infra.media_s3_bucket`, `media_s3_prefix`, `media_public_base_url` | One busy site gets its own bucket and CDN |
+| `infra.cloudfront_distribution_id`, `build_target`, `region` | Its own invalidation target and build pipeline |
+
+Gates count live; the `tenant_usage` rollup that the portfolio screen reads is
+refreshed hourly by a worker, so a stale number can only make a dashboard old,
+never let a site past its ceiling.
+
+### Per-site domains and frontend connection
+
+`tenant_domains` holds several hostnames per site with a primary flag and a
+verification token, unique across the install — two sites claiming one hostname
+would be a tenant-confusion bug, not a validation nicety. Only **verified**
+domains resolve or are trusted for CORS, so registering a hostname is a claim,
+not an authorization.
+
+The DNS/TXT check itself is the operator's to perform; this platform will not
+pretend to prove a DNS record from inside a container that may have no egress.
+What it guarantees is that an unverified domain is inert.
+
+Each site's Platform detail screen lists the exact URLs its frontend should
+call. Every one works with the slug in the path, and also without it when the
+request arrives on a verified domain — which is the single-domain,
+path-routed deployment (CloudFront sending `/api/*` to the CMS and everything
+else to the static site).
 
 ## API
 
@@ -319,6 +437,43 @@ POST   /api/compliance/requests/{id}/erase?confirm=true&mode=anonymize|delete
 GET    /api/compliance/lookup?email=
 GET    /api/compliance/retention  PUT (policy)   POST .../preview   POST .../run
 ```
+
+### Multi-site control plane
+
+Everything under `/api/platform` needs `sites.manage` (Super Admin), except
+`my-sites` and `switch`, which any account uses to move between the sites it
+can reach.
+
+```
+GET    /api/platform/sites             ?q=&include_archived=   portfolio + usage
+POST   /api/platform/sites             create and fully provision a site
+GET    /api/platform/sites/{slug}      usage vs limits, domains, people, audit
+PATCH  /api/platform/sites/{slug}      { name, plan, notes, infra }
+PUT    /api/platform/sites/{slug}/status   { status, reason }  ends sessions
+PUT    /api/platform/sites/{slug}/limits   { limits }          per-site ceilings
+DELETE /api/platform/sites/{slug}?confirm_slug=<slug>          archived only
+POST   /api/platform/sites/{slug}/refresh-usage
+
+GET    /api/platform/sites/{slug}/domains
+POST   /api/platform/sites/{slug}/domains          { domain, make_primary }
+POST   /api/platform/sites/{slug}/domains/{id}/verify
+POST   /api/platform/sites/{slug}/domains/{id}/primary
+DELETE /api/platform/sites/{slug}/domains/{id}
+
+GET    /api/platform/users             ?q=   cross-site account directory
+GET    /api/platform/events            site lifecycle audit
+GET    /api/platform/isolation         which isolation layers are enforced
+
+GET    /api/platform/my-sites          sites this account can switch into
+POST   /api/platform/switch?tenant_slug=   re-points the current session
+GET    /api/platform/sites/{slug}/members
+POST   /api/platform/members           { user_email, tenant_slug, role }
+DELETE /api/platform/members/{id}      also ends that user's sessions there
+```
+
+Site switching is audited twice: as `site.entered` in the target site's own
+activity log, and as `session_switched` in `tenant_events`. A support engineer
+entering a client's site is exactly the event that client will later ask about.
 
 ### Public API — what a static frontend calls
 
@@ -636,7 +791,22 @@ Things to get right at deploy time:
 - Both CSV exports (leads and form submissions) prefix leading `=+-@` so a
   submitted value cannot execute as a formula in Excel or Sheets.
 - Public endpoints answer identically for a valid and an unknown site slug, so
-  they cannot be used to enumerate which clients are on the install.
+  they cannot be used to enumerate which clients are on the install. The one
+  exception is deliberate: a *suspended* site answers 503, because pretending a
+  client's site never existed would cost them their search rankings.
+- **A domain claimed by another site returns 409 without naming it.** Saying
+  which site holds it would leak the portfolio to whoever can add a domain.
+- **`sites.manage` is the portfolio boundary.** Only Super Admin holds it by
+  default, and `_SITE_ADMIN` (what Owner and Admin get) explicitly excludes it.
+  Verified: a site Owner is refused on listing, creating, switching and every
+  administrative action.
+- **Revoking a cross-site membership ends that account's sessions on that
+  site immediately** — otherwise revocation would take effect at next sign-in,
+  which is not what anyone means by revoking access.
+- **Check `/healthz` after deploying.** `isolation.rowLevelSecurity` tells you
+  whether the database is enforcing tenancy or merely holding inert policies.
+  Security that looks present and is not is worse than none, because you plan
+  around it.
 
 ## Deploying on AWS
 
@@ -668,8 +838,15 @@ survive its task being replaced mid-dump. If you do use it, set
 and note the Dockerfile installs `postgresql-client` for `pg_dump`. For media,
 S3 versioning with a replication rule beats copying objects through the app.
 
+**Per-site scaling.** One busy client does not need a platform change: set
+`infra.media_s3_bucket` and `infra.media_public_base_url` on that tenant to
+give it its own bucket and distribution, raise its `limits`, and leave every
+other site alone. Sites that outgrow shared Postgres are the case for moving
+that tenant to its own database — the schema is identical, so it is a dump and
+restore plus a `DATABASE_URL`, not a fork.
+
 **Rollback.** The app is stateless, so redeploy the previous task definition.
-The one-way doors are the two schema files. Both are written to be re-runnable
+The one-way doors are the three schema files. Both are written to be re-runnable
 and additive (`IF NOT EXISTS` everywhere, `ADD COLUMN IF NOT EXISTS`,
 `ALTER TYPE … ADD VALUE IF NOT EXISTS`), so rolling the app back does not meet
 a column that no longer exists. The one thing a rollback cannot undo is an
@@ -725,6 +902,25 @@ first version of `user_profiles` violated its own `NOT NULL` constraint on
 every root-level folder as distinct, because `NULL <> NULL`. `media_folders`
 uses a unique index on `coalesce(parent_id, 0)` instead.
 
+**RLS is invisible when it is not working.** Policies can be installed, forced
+and completely inert, because superusers and `BYPASSRLS` roles are exempt and
+`FORCE ROW LEVEL SECURITY` only reaches the table owner. `db.rls_status()`
+probes the connecting role rather than assuming, and reports it on `/healthz`,
+in the startup log and in Platform → Isolation. If you add a new tenant table,
+re-run `db/tenancy.sql`: the policy block walks every table with a `tenant_id`
+column, so it picks the new one up.
+
+**`tenants.status` and `tenants.is_active` are kept in step by a trigger.**
+`is_active` is what the original queries read and `status` carries the reason,
+so a trigger derives each from the other in both directions. Writing either one
+alone is safe; that is the point.
+
+**A site's deletion audit has to outlive the site.** Every business table
+cascades from `tenants`, `activity_log` included — so the record of a deletion
+cannot live there. `tenant_events` stores `tenant_slug` as plain text beside a
+nullable `tenant_id`, and a row whose `tenant_id` is NULL is one whose site is
+gone.
+
 ## Not built yet
 
 - **Email open and click tracking.** Campaigns send and record delivery, but
@@ -742,10 +938,18 @@ uses a unique index on `coalesce(parent_id, 0)` instead.
 - **i18n and RTL**, which matters if any UAE client needs Arabic. `locale` is
   stored per workspace and per user and is exposed to the frontend; the admin
   itself is English-only.
-- **Row-level security.** `TenantDB` is enforced in the application layer.
-  `SET LOCAL app.tenant_id` per transaction with RLS policies would move it
-  into the database; the schema already fits it.
+- **Automated domain verification.** A domain is verified by an administrator
+  asserting it, not by the platform checking a DNS TXT record — a container
+  with no egress cannot prove one. Unverified domains are inert, so the gap is
+  in convenience, not in safety.
+- **Owner invitations.** Creating a site sets the owner's password directly and
+  the operator hands it over. An emailed invite with a single-use link would be
+  better, and the `password_resets` table already has the right shape for it.
+- **Per-tenant database routing.** `tenants.infra` can point one site at its
+  own bucket and CDN, but not at its own database — `db.py` holds a single
+  pool. That is the next step for a site that outgrows shared Postgres.
 - **Distributed rate limiting.** Still an in-process dict — see the caveat
-  above.
+  above. It is also per-process, not per-tenant, so one noisy site's public
+  traffic shares a budget with the rest.
 - **Field-level permissions.** Permissions are per action, not per field, so
   "an Author may edit the body but not the SEO block" is not expressible.

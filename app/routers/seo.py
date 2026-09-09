@@ -24,7 +24,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import PlainTextResponse, Response
 
-from .. import db, events, publishing
+from .. import db, events, publishing, tenancy
 from ..permissions import require_perm
 from ..schemas import (
     NotFoundResolve,
@@ -412,20 +412,17 @@ async def put_robots(
 
 
 # ====================================================== public endpoints
-async def _tenant_by_slug(slug: str) -> dict:
-    row = await db.fetch_one(
-        "SELECT id, slug::text AS slug FROM tenants WHERE slug = $1 AND is_active",
-        collapse(slug, 60),
-    )
-    if not row:
-        raise HTTPException(404, "Unknown site.")
-    return row
+async def _tenant_by_slug(slug: str | None, request: Request) -> dict:
+    """Slug first, then the Host header — see tenancy.resolve_public."""
+    return await tenancy.resolve_public(slug, request.headers.get("host"))
 
 
 @public_router.get("/api/v1/{tenant_slug}/sitemap.xml", include_in_schema=False)
 @public_router.get("/api/v1/{tenant_slug}/sitemap-{name}.xml", include_in_schema=False)
-async def public_sitemap(tenant_slug: str, name: str = "index") -> Response:
-    tenant = await _tenant_by_slug(tenant_slug)
+async def public_sitemap(
+    tenant_slug: str, request: Request, name: str = "index"
+) -> Response:
+    tenant = await _tenant_by_slug(tenant_slug, request)
     row = await db.fetch_one(
         "SELECT xml FROM sitemap_cache WHERE tenant_id = $1 AND name = $2",
         tenant["id"], collapse(name, 60) or "index",
@@ -449,8 +446,8 @@ async def public_sitemap(tenant_slug: str, name: str = "index") -> Response:
 
 
 @public_router.get("/api/v1/{tenant_slug}/robots.txt", include_in_schema=False)
-async def public_robots(tenant_slug: str) -> PlainTextResponse:
-    tenant = await _tenant_by_slug(tenant_slug)
+async def public_robots(tenant_slug: str, request: Request) -> PlainTextResponse:
+    tenant = await _tenant_by_slug(tenant_slug, request)
     return PlainTextResponse(
         await publishing.robots_txt(tenant["id"]),
         headers={"cache-control": "public, max-age=3600"},
@@ -458,10 +455,12 @@ async def public_robots(tenant_slug: str) -> PlainTextResponse:
 
 
 @public_router.get("/api/v1/{tenant_slug}/redirect", include_in_schema=False)
-async def resolve_redirect(tenant_slug: str, path: str = Query(max_length=500)) -> dict:
+async def resolve_redirect(
+    tenant_slug: str, request: Request, path: str = Query(max_length=500)
+) -> dict:
     """Look up one path. A static frontend or edge function calls this on
     a 404 and issues the real redirect itself."""
-    tenant = await _tenant_by_slug(tenant_slug)
+    tenant = await _tenant_by_slug(tenant_slug, request)
     from_path = normalise_path(path)
 
     row = await db.fetch_one(
@@ -483,7 +482,7 @@ async def resolve_redirect(tenant_slug: str, path: str = Query(max_length=500)) 
 async def report_not_found(tenant_slug: str, payload: dict, request: Request) -> dict:
     """Called by the frontend's 404 page. Folded by path with a counter,
     so bot noise costs one row rather than one row per hit."""
-    tenant = await _tenant_by_slug(tenant_slug)
+    tenant = await _tenant_by_slug(tenant_slug, request)
     try:
         path = normalise_path(str(payload.get("path") or ""))
     except HTTPException:

@@ -165,7 +165,8 @@ async def optional_user(request: Request) -> CurrentUser | None:
     row = await db.fetch_one(
         """SELECT s.id, s.csrf_token, s.tenant_id,
                   u.id AS user_id, u.email, u.display_name, u.role, u.is_active,
-                  t.name AS tenant_name, t.slug AS tenant_slug
+                  t.name AS tenant_name, t.slug AS tenant_slug,
+                  t.is_active AS tenant_active
              FROM sessions s
              JOIN users u   ON u.id = s.user_id
              JOIN tenants t ON t.id = s.tenant_id
@@ -173,6 +174,15 @@ async def optional_user(request: Request) -> CurrentUser | None:
         sha256(token),
     )
     if not row or not row["is_active"]:
+        return None
+
+    # A suspended or archived site must not keep serving the people
+    # already signed in to it. Suspension deletes the site's sessions,
+    # so this is the belt to that braces: a session created in the same
+    # instant, or one whose site was deactivated by older code writing
+    # `is_active` directly, stops working here.
+    if not row["tenant_active"]:
+        log.info("session rejected: site %s is not active", row["tenant_slug"])
         return None
 
     return CurrentUser(

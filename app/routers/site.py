@@ -17,7 +17,7 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
-from .. import db, events, storage
+from .. import db, events, storage, tenancy
 from ..content import public_path, slugify
 from ..permissions import require_perm
 from ..sanitize import clean_html
@@ -582,13 +582,7 @@ async def public_config(tenant_slug: str, request: Request) -> dict:
     safe to ship to a browser — a static build embeds whatever this
     returns, so the filtering happens here rather than in the frontend.
     """
-    tenant = await db.fetch_one(
-        """SELECT id, slug::text AS slug, name, primary_domain
-             FROM tenants WHERE slug = $1 AND is_active""",
-        collapse(tenant_slug, 60),
-    )
-    if not tenant:
-        raise HTTPException(404, "Unknown site.")
+    tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
 
     scoped = db.TenantDB(tenant["id"])
     rows = await scoped.fetch("SELECT key, value FROM settings WHERE tenant_id = $1")
@@ -691,12 +685,8 @@ def _now() -> str:
 
 
 @public_router.get("/api/v1/{tenant_slug}/menus/{menu_slug}")
-async def public_menu(tenant_slug: str, menu_slug: str) -> dict:
-    tenant = await db.fetch_one(
-        "SELECT id FROM tenants WHERE slug = $1 AND is_active", collapse(tenant_slug, 60)
-    )
-    if not tenant:
-        raise HTTPException(404, "Unknown site.")
+async def public_menu(tenant_slug: str, menu_slug: str, request: Request) -> dict:
+    tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
     scoped = db.TenantDB(tenant["id"])
     menu = await scoped.fetch_one(
         "SELECT id, name, location FROM menus WHERE tenant_id = $1 AND slug = $2",

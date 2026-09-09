@@ -21,7 +21,7 @@ from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Request
 
-from .. import db, events, publishing
+from .. import db, events, publishing, tenancy
 from ..config import settings
 from ..content import public_path
 from ..permissions import require_perm
@@ -313,6 +313,8 @@ async def create_api_key(
     user: CurrentUser = Depends(require_perm("apikeys.manage")),
 ) -> dict:
     """Mint a key. The secret is shown once and only its hash is kept."""
+    await tenancy.enforce_limit(user.tenant_id, "api_keys")
+
     unknown = set(payload.scopes or []) - set(API_SCOPES)
     if unknown:
         raise HTTPException(400, f"Unknown scope(s): {', '.join(sorted(unknown))}")
@@ -411,14 +413,13 @@ async def resolve_api_key(
     )
 
 
-async def _tenant(slug: str) -> dict:
-    row = await db.fetch_one(
-        "SELECT id, slug::text AS slug, name FROM tenants WHERE slug = $1 AND is_active",
-        collapse(slug, 60),
-    )
-    if not row:
-        raise HTTPException(404, "Unknown site.")
-    return row
+async def _tenant(slug: str | None, request: Request) -> dict:
+    """Resolve by slug, falling back to the Host header.
+
+    Goes through tenancy.resolve_public so a suspended site answers 503
+    rather than serving stale content, and an archived one is 404.
+    """
+    return await tenancy.resolve_public(slug, request.headers.get("host"))
 
 
 CACHE_PUBLIC = {"cache-control": "public, max-age=60, stale-while-revalidate=300"}
@@ -437,7 +438,7 @@ async def public_list(
     authorization: str | None = Header(default=None),
 ) -> dict:
     """Published items of one type. Serves the snapshot, never the draft."""
-    tenant = await _tenant(tenant_slug)
+    tenant = await _tenant(tenant_slug, request)
     await resolve_api_key(tenant["id"], authorization, request, "content:read")
 
     content_type = await db.fetch_one(
@@ -500,7 +501,7 @@ async def public_item(
     request: Request,
     authorization: str | None = Header(default=None),
 ) -> dict:
-    tenant = await _tenant(tenant_slug)
+    tenant = await _tenant(tenant_slug, request)
     await resolve_api_key(tenant["id"], authorization, request, "content:read")
 
     row = await db.fetch_one(
@@ -527,7 +528,7 @@ async def public_all(
     `since` makes incremental builds possible: pass the previous build's
     `generatedAt` and only changed items come back.
     """
-    tenant = await _tenant(tenant_slug)
+    tenant = await _tenant(tenant_slug, request)
     await resolve_api_key(tenant["id"], authorization, request, "content:read")
 
     rows = await db.fetch(

@@ -31,7 +31,7 @@ from fastapi import (
 )
 from fastapi.responses import Response
 
-from .. import db, events, imaging, storage
+from .. import db, events, imaging, storage, tenancy
 from ..content import slugify
 from ..permissions import require_perm
 from ..schemas import (
@@ -207,6 +207,12 @@ async def upload(
             413,
             f"That file is larger than {imaging.MAX_UPLOAD_BYTES // 1048576} MB.",
         )
+
+    # Both media ceilings, checked before the derivatives are built:
+    # generating six variants and then refusing the row would burn the
+    # CPU for nothing.
+    await tenancy.enforce_limit(user.tenant_id, "media_files")
+    await tenancy.enforce_limit(user.tenant_id, "media_bytes", adding=len(data))
 
     original_name = (file.filename or "upload").strip()[:200] or "upload"
     try:

@@ -21,7 +21,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from .. import db
+from .. import db, tenancy
 from ..config import settings
 from ..permissions import permissions_for, require_perm
 from ..ratelimit import RateLimiter
@@ -75,10 +75,11 @@ async def collect(
     ip = client_ip(request)
     beacon_limiter.check(f"pv:{ip or 'unknown'}")
 
-    tenant = await db.fetch_one(
-        "SELECT id FROM tenants WHERE slug = $1 AND is_active", collapse(tenant_slug, 60)
-    )
-    if not tenant:
+    try:
+        tenant = await tenancy.resolve_public(tenant_slug, request.headers.get("host"))
+    except HTTPException:
+        # A beacon from an unknown or suspended site is dropped, not
+        # errored — nothing on the page is waiting for an answer.
         return empty
 
     # Respect the tenant's own switch: a workspace that only wants GA4

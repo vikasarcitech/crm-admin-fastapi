@@ -323,4 +323,29 @@ def all_workers() -> list:
         health_worker,
         retention_worker,
         backup_worker,
+        usage_worker,
     ]
+
+
+# ======================================================= platform usage
+@_guard("usage-refresh")
+async def run_usage_refresh() -> int:
+    """Recompute every site's usage rollup.
+
+    The portfolio screen reads `tenant_usage` rather than counting
+    across every table live, because that query is fine at ten sites
+    and a problem at three hundred. This is what keeps the rollup
+    honest.
+    """
+    from .tenancy import refresh_all_usage  # noqa: PLC0415
+
+    return await refresh_all_usage()
+
+
+async def usage_worker() -> None:
+    """Hourly. Quota *gates* count live (see tenancy.enforce_limit), so
+    a stale rollup only ever makes a dashboard number old, never lets a
+    site past its ceiling."""
+    while True:
+        await run_usage_refresh()
+        await asyncio.sleep(3600)
