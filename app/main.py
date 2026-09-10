@@ -354,9 +354,41 @@ async def reset_page() -> FileResponse:
     return FileResponse(PUBLIC_DIR / "reset.html")
 
 
+# Prefixes that belong to the API, never to the admin shell.
+API_PREFIXES = ("api/", "p/")
+
+
 @app.get("/{full_path:path}", include_in_schema=False)
-async def spa(full_path: str) -> FileResponse:
-    """Serve the admin shell for any non-API path."""
+async def spa(request: Request, full_path: str):
+    """Serve the admin shell for any non-API path.
+
+    The API exclusion is the point of this function and it used to be
+    missing: a GET of a POST-only endpoint, or any typo'd API path,
+    matched here and returned the admin shell as HTML 200. A frontend
+    then failed with "unexpected token <" instead of a status code that
+    says what went wrong, which is a miserable thing to debug.
+
+    Starlette would normally answer 405 for a known path called with
+    the wrong method, but only when nothing else fully matches — and
+    this catch-all fully matches every GET. So the partial match is
+    checked by hand to give back the 405 that was owed.
+    """
+    if full_path.startswith(API_PREFIXES):
+        allowed = _methods_for(request)
+        if allowed:
+            return JSONResponse(
+                status_code=405,
+                content={
+                    "error": f"{request.method} is not allowed here. "
+                             f"Use {', '.join(sorted(allowed))}."
+                },
+                headers={"allow": ", ".join(sorted(allowed | {"OPTIONS"}))},
+            )
+        return JSONResponse(
+            status_code=404,
+            content={"error": f"No API endpoint at /{full_path}."},
+        )
+
     candidate = (PUBLIC_DIR / full_path).resolve()
     if (
         full_path
@@ -365,3 +397,26 @@ async def spa(full_path: str) -> FileResponse:
     ):
         return FileResponse(candidate)
     return FileResponse(PUBLIC_DIR / "index.html")
+
+
+def _methods_for(request: Request) -> set[str]:
+    """Methods a real route accepts for this exact path.
+
+    A partial match in Starlette means "the path matched, the method
+    did not" — precisely the case worth reporting as 405 rather than
+    404, because it tells an integrator the URL is right and the verb
+    is wrong.
+    """
+    from starlette.routing import Match  # noqa: PLC0415
+
+    allowed: set[str] = set()
+    for route in app.routes:
+        if route is request.scope.get("route"):
+            continue  # this catch-all
+        try:
+            match, _ = route.matches(request.scope)
+        except Exception:
+            continue
+        if match is Match.PARTIAL:
+            allowed |= set(getattr(route, "methods", None) or set())
+    return allowed - {"HEAD"}

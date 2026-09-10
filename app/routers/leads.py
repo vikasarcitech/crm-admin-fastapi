@@ -497,7 +497,7 @@ async def lead_timeline(lead_id: int, scoped: db.TenantDB = Depends(tenant_db)) 
                 "payload": submission["payload"],
                 "id": submission["id"],
             }
-        )
+        ) 
 
     entries.sort(key=lambda entry: entry["at"], reverse=True)
     return {"lead": lead, "timeline": entries}
