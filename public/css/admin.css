@@ -960,3 +960,15 @@ ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
 /* Media still being encoded by the worker. */
 .media-icon.is-working { color: var(--brass); }
 .media-icon.is-failed { color: var(--danger); }
+
+/* Raw-HTML block editor. Monospace and no wrapping-by-word, because
+   this is markup being read for structure, not prose. */
+textarea.pb-code {
+  font-family: var(--mono);
+  font-size: 12.5px;
+  line-height: 1.55;
+  tab-size: 2;
+  white-space: pre;
+  overflow-wrap: normal;
+  overflow-x: auto;
+}

@@ -90,7 +90,7 @@ docs are at `/api/docs` in development and disabled in production.
 | **Compliance** | Consent logging with policy version and evidence, cookie-consent config, data-subject export (JSON across six tables) and erasure (anonymize or delete), per-scope retention policies with a preview and a worker that enforces them |
 | Attribution | Landing page, referrer and the full UTM set captured at submission, first-touch persisted per session |
 | Outbound | Webhook endpoints with HMAC-SHA256 signing, idempotency keys, exponential backoff, delivery log — subscribable to publishes and build failures, not just leads |
-| Page builder | The original block builder is still here: typed JSON blocks (hero, rich text, image, features, quote, lead form, …), markdown-subset formatting, per-page theme, draft → publish with revisions, served at `/p/{tenant}/{slug}` |
+| Page builder | The original block builder is still here: typed JSON blocks (hero, rich text, image, features, quote, lead form, sanitized raw HTML, …), markdown-subset formatting, per-page theme, draft → publish with revisions, served at `/p/{tenant}/{slug}` |
 | Sign-up | Self-service registration at `/register` — creates a fresh workspace with the registrant as owner, a starter contact form, the built-in content types, default menus and email templates (`ALLOW_SIGNUPS=0` for invite-only installs) |
 | Email | Queued outbound email (`email_outbox` + worker, retries with backoff) through a provider-agnostic sender — SES SMTP in production, log provider in dev. Powers lead notifications, autoresponders, campaigns, subscriber confirmations and password reset at `/forgot` → `/reset` |
 
@@ -557,23 +557,45 @@ the KPIs that need traffic data report `null` rather than a misleading `0`.
 
 ### Page builder
 
-Pages are stored as a validated list of typed JSON blocks — never as HTML.
-`pagebuilder.py` cleans every block against a per-type field spec on write
-(scheme-checked links, hex-only colours, no raw-HTML block) and escapes every
-value again at render time, so page authors cannot introduce stored XSS.
+Pages are stored as a validated list of typed JSON blocks, not as a slab of
+HTML. `pagebuilder.py` cleans every block against a per-type field spec on
+write (scheme-checked links, hex-only colours) and escapes every value again
+at render time, so page authors cannot introduce stored XSS.
 
 Text supports a markdown subset rendered escape-first on the server:
 `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, `[label](url)` (scheme
 allow-listed; a `javascript:` link renders as its label), plus in rich-text
 blocks `## headings`, `-`/`1.` lists, `>` quotes and `---` dividers. The
 editor drawer has a toolbar (with ⌘B/⌘I) that inserts the syntax.
+
+The one exception to "escaped at render" is the `html` block, for people who
+need to paste an embed or a snippet the other blocks do not cover. It stores
+markup, so it is sanitized on **write** instead — through the same `nh3`
+allow-list `content_items.body` uses (`sanitize.py`), then emitted verbatim by
+the only renderer in the file that does not escape. Sanitizing on write rather
+than on read is deliberate: a later change to that renderer cannot start
+emitting something unsafe that was already stored. Structure, links, lists,
+tables, images and figures survive; scripts, event handlers, inline styles and
+`javascript:` URLs do not, and an `iframe` is kept only if its host is in
+`EMBED_ALLOWED_HOSTS`. The block is capped at 60,000 characters, and its
+`styled` flag chooses whether the page's own typography applies (off is right
+for a third-party widget that ships its own CSS). Every rule is scoped under
+`.pb-html`, so pasted markup cannot restyle the rest of the page.
+
 Editing writes the draft columns only; the public URL serves a snapshot taken
 at publish, and each publish records a revision (newest 20 kept) that can be
 restored into the draft. A `form` block renders one of the tenant's intake
 forms inline — `page-form.js` posts it to the same intake endpoint with the
 usual honeypot, fill-time and first-touch attribution handling. Published
-pages get their own strict CSP (`img-src https:` so image blocks can point
-anywhere, everything else locked to self) and a 60-second public cache TTL.
+pages get their own strict CSP and a 60-second public cache TTL. It is built
+by `_page_csp()` rather than hard-coded: `default-src 'none'` means an omitted
+directive blocks outright, so `frame-src` is derived from the same
+`EMBED_ALLOWED_HOSTS` the sanitizer enforces — in both bare and wildcard form,
+because CSP matches hosts exactly while the sanitizer matches a dot suffix.
+That keeps the two from drifting into the worst failure mode here: an embed
+that saves cleanly and then silently refuses to load. `img-src` and `media-src`
+allow `'self' https:` so blocks can point at a CDN; everything else is locked
+to self.
 
 ### The content model
 

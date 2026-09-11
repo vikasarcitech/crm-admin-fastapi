@@ -150,6 +150,34 @@ def _clean_form(b: dict) -> dict:
     }
 
 
+# The one block that stores markup rather than data. Every other block
+# is escaped at render time, which is what makes stored XSS impossible
+# here — so this one is sanitized at *write* time instead, through the
+# same allow-list cleaner content_items.body uses (app/sanitize.py).
+# Sanitizing on write means a later change to this renderer cannot
+# start emitting something unsafe that was stored earlier.
+MAX_HTML_CHARS = 60_000
+
+
+def _clean_html(b: dict) -> dict:
+    from .sanitize import clean_html  # noqa: PLC0415 — sanitize imports config
+
+    raw = b.get("html")
+    try:
+        cleaned = clean_html(raw, limit=MAX_HTML_CHARS)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+
+    return {
+        "html": cleaned or "",
+        # Whether to apply the page's own typography to the markup.
+        # Off is the right default for a pasted embed or a third-party
+        # widget that ships its own styling.
+        "styled": bool(b.get("styled", True)),
+        "width": _choice(b, "width", ("normal", "wide", "full"), "normal"),
+    }
+
+
 def _clean_spacer(b: dict) -> dict:
     return {"size": _choice(b, "size", tuple(SPACER_SIZES), "medium")}
 
@@ -167,6 +195,7 @@ CLEANERS: dict[str, Callable[[dict], dict]] = {
     "features": _clean_features,
     "quote": _clean_quote,
     "form": _clean_form,
+    "html": _clean_html,
     "spacer": _clean_spacer,
     "divider": _clean_divider,
 }
@@ -431,6 +460,27 @@ def _render_form(b: dict, ctx: dict) -> str:
     )
 
 
+def _render_html(b: dict, ctx: dict) -> str:
+    """Emit the stored markup verbatim.
+
+    Deliberately NOT passed through _esc: it was sanitized by
+    app/sanitize.py when it was saved, and escaping it again would
+    render the tags as visible text. This is the only renderer in the
+    file that does not escape, which is why the cleaner above is the
+    security boundary.
+    """
+    markup = b.get("html") or ""
+    if not markup:
+        return ""
+    classes = ["pb-html"]
+    if b.get("styled", True):
+        classes.append("pb-html-styled")
+    width = b.get("width", "normal")
+    if width != "normal":
+        classes.append(f"pb-html-{width}")
+    return f'<div class="{" ".join(classes)}">{markup}</div>'
+
+
 def _render_spacer(b: dict, ctx: dict) -> str:
     return f'<div style="height:{SPACER_SIZES[b["size"]]}"></div>'
 
@@ -448,6 +498,7 @@ RENDERERS: dict[str, Callable[[dict, dict], str]] = {
     "features": _render_features,
     "quote": _render_quote,
     "form": _render_form,
+    "html": _render_html,
     "spacer": _render_spacer,
     "divider": _render_divider,
 }
@@ -522,6 +573,64 @@ blockquote cite { display: block; font-size: .9rem; font-style: normal; opacity:
 .preview-banner {
   position: sticky; top: 0; z-index: 10; text-align: center;
   background: #a8791f; color: #fff; font-size: 13px; padding: 6px 10px;
+}
+
+/* HTML block. `pb-html-styled` opts the markup into the page's own
+   typography; leaving it off is for a pasted widget that brings its
+   own. Every rule is scoped under .pb-html so pasted markup cannot
+   restyle the rest of the page. */
+.pb-html { margin: 0 0 26px; }
+.pb-html-wide { max-width: min(1080px, 92vw); margin-inline: auto; }
+.pb-html-full { max-width: none; }
+.pb-html > *:last-child { margin-bottom: 0; }
+/* Embeds keep a 16:9 box and never overflow the column. */
+.pb-html iframe { width: 100%; max-width: 100%; aspect-ratio: 16 / 9; height: auto; border: 0; }
+.pb-html img { max-width: 100%; height: auto; }
+.pb-html-styled h1, .pb-html-styled h2, .pb-html-styled h3,
+.pb-html-styled h4, .pb-html-styled h5, .pb-html-styled h6 {
+  line-height: 1.25; margin: 1.6em 0 .5em; font-weight: 600;
+}
+.pb-html-styled h2 { font-size: 1.55rem; }
+.pb-html-styled h3 { font-size: 1.25rem; }
+.pb-html-styled h4 { font-size: 1.08rem; }
+.pb-html-styled p { margin: 0 0 1em; line-height: 1.65; }
+.pb-html-styled ul, .pb-html-styled ol { margin: 0 0 1em; padding-left: 1.4em; line-height: 1.65; }
+.pb-html-styled li { margin: .3em 0; }
+.pb-html-styled a { color: var(--primary); text-decoration: underline; }
+.pb-html-styled blockquote {
+  margin: 1.2em 0; padding: .2em 0 .2em 1.1em;
+  border-left: 3px solid var(--primary);
+  color: color-mix(in srgb, var(--text) 72%, transparent);
+}
+.pb-html-styled code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: .9em; padding: .15em .35em; border-radius: 3px;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.pb-html-styled pre {
+  padding: 14px 16px; border-radius: 4px; overflow-x: auto; margin: 0 0 1em;
+  background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.pb-html-styled pre code { background: none; padding: 0; }
+/* A wide table scrolls itself rather than making the page scroll —
+   the difference between a readable price table and a broken layout. */
+.pb-html-styled table {
+  width: 100%; border-collapse: collapse; margin: 0 0 1em;
+  display: block; overflow-x: auto;
+}
+.pb-html-styled th, .pb-html-styled td {
+  padding: 8px 10px; text-align: left;
+  border: 1px solid color-mix(in srgb, var(--text) 15%, transparent);
+}
+.pb-html-styled th { font-weight: 600; background: color-mix(in srgb, var(--text) 5%, transparent); }
+.pb-html-styled figure { margin: 0 0 1em; }
+.pb-html-styled figcaption {
+  font-size: .86rem; margin-top: .4em;
+  color: color-mix(in srgb, var(--text) 65%, transparent);
+}
+.pb-html-styled hr {
+  border: 0; margin: 1.6em 0;
+  border-top: 1px solid color-mix(in srgb, var(--text) 15%, transparent);
 }
 """
 

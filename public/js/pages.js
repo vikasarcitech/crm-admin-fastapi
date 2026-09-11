@@ -157,6 +157,28 @@
         ['button_label', 'Button label', 'text'],
       ],
     },
+    html: {
+      label: 'HTML',
+      make: () => ({
+        type: 'html',
+        html: '<h2>Heading</h2>\n<p>Paste or write HTML here.</p>',
+        styled: true,
+        width: 'normal',
+      }),
+      summary: (b) => {
+        // A tag soup preview is useless in the list; show the text.
+        const text = (b.html || '').replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+        return text ? text.slice(0, 60) : 'empty HTML block';
+      },
+      fields: [
+        ['html', 'HTML', 'code'],
+        ['styled', 'Typography', 'toggle',
+          [[true, 'Use the page’s fonts and spacing'],
+            [false, 'Leave the markup unstyled']]],
+        ['width', 'Width', 'select',
+          [['normal', 'Content width'], ['wide', 'Wide'], ['full', 'Full bleed']]],
+      ],
+    },
     spacer: {
       label: 'Spacer',
       make: () => ({ type: 'spacer', size: 'medium' }),
@@ -369,7 +391,19 @@
 
       def.fields.forEach(([key, label, kind, options, coerce]) => {
         let control;
-        if (kind === 'textarea' || kind === 'rich') {
+        if (kind === 'code') {
+          control = h('textarea', {
+            rows: 18,
+            class: 'pb-code',
+            spellcheck: 'false',
+            value: block[key] || '',
+          });
+        } else if (kind === 'toggle') {
+          // A select rather than a checkbox: the two options each need a
+          // sentence to be understandable, which a checkbox label cannot
+          // carry well.
+          control = select(options, block[key] !== false, null);
+        } else if (kind === 'textarea' || kind === 'rich') {
           control = h('textarea', { rows: kind === 'rich' ? 14 : 6, value: block[key] || '' });
         } else if (kind === 'select') {
           control = select(options, block[key], null);
@@ -395,6 +429,9 @@
                 const [title, ...rest] = line.split('|');
                 return { title: (title || '').trim(), body: rest.join('|').trim() };
               }).filter((i) => i.title);
+            } else if (kind === 'toggle') {
+              // select values are strings; the block field is a boolean.
+              block[key] = control.value === 'true';
             } else {
               block[key] = coerce ? coerce(control.value) : control.value;
             }
@@ -406,13 +443,29 @@
       });
 
       openDrawer({
-        title: `Edit ${def.label.toLowerCase()}`,
+        // Lowercased so it reads as a sentence ("Edit hero") — but an
+        // all-caps label is an acronym and must survive as one.
+        title: `Edit ${def.label === def.label.toUpperCase() ? def.label : def.label.toLowerCase()}`,
         subtitle: 'Changes save to the draft — the live page updates on publish.',
         body: [
           ...controls.map(({ kind, control }, i) => field(
             def.fields[i][1],
-            (kind === 'textarea' || kind === 'rich') ? mdToolbar(control, kind === 'rich') : control,
+            (kind === 'textarea' || kind === 'rich')
+              ? mdToolbar(control, kind === 'rich')
+              : control,
           )),
+          // Said once, in the place where someone is about to paste
+          // something: what will survive the save, and what will not.
+          block.type === 'html'
+            ? h('div.notice', { dataset: { kind: 'info' } }, [
+              h('strong', { text: 'HTML is sanitized when you save. ' }),
+              'Structure, links, lists, tables, images and figures are kept. '
+              + 'Scripts, event handlers, inline styles and javascript: links are '
+              + 'removed. Embeds work only from the allow-listed hosts (YouTube, '
+              + 'Vimeo, Spotify, SoundCloud, Google Maps, Calendly) — an iframe '
+              + 'pointing anywhere else is dropped, not left broken.',
+            ])
+            : null,
           submit,
         ],
       });

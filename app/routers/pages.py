@@ -9,6 +9,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from .. import db, events
+from ..config import settings
 from ..pagebuilder import clean_blocks, clean_theme, render_page
 from ..schemas import PageCreate, PageUpdate, collapse
 from ..security import CurrentUser, client_ip, require_role, require_user, tenant_db
@@ -19,22 +20,54 @@ public_router = APIRouter(tags=["pages-public"])
 PAGE_COLUMNS = """id, slug, title, description, blocks, theme, status::text AS status,
                   published_at, created_at, updated_at"""
 
-# The public page loads images from anywhere over https and posts the
-# lead form back to this origin; everything else stays locked down.
-PUBLIC_PAGE_CSP = "; ".join(
-    [
+def _page_csp(*, preview: bool = False) -> str:
+    """CSP for a rendered page.
+
+    `default-src 'none'` means an unlisted directive blocks outright —
+    which is why `frame-src` has to be stated explicitly now that an
+    HTML block can hold an embed. Without it the sanitizer would happily
+    store a YouTube iframe and the browser would silently refuse to load
+    it, which is a confusing way to find out.
+
+    The frame allow-list is the *same* list the sanitizer enforces
+    (EMBED_ALLOWED_HOSTS), so the two cannot drift: a host the sanitizer
+    strips is a host the CSP would have blocked anyway, and vice versa.
+    """
+    # Both forms per host: CSP matches hosts exactly, so
+    # `https://youtube.com` does not cover `www.youtube.com` — which is
+    # precisely what the sanitizer allows (it matches on a dot suffix).
+    # Emitting only the bare host would store an embed the browser then
+    # refuses to load.
+    frame_src = " ".join(
+        source
+        for host in settings.embed_allowed_hosts
+        for source in (f"https://{host}", f"https://*.{host}")
+    )
+    directives = [
         "default-src 'none'",
-        "img-src https: data:",
+        # Images may come from anywhere over https so an image block can
+        # point at a CDN we do not control. `'self'` is what makes a
+        # same-origin media path work on a deployment served over plain
+        # http — without it a relative /media/... image is blocked, which
+        # is a confusing failure to hit behind a TLS-terminating proxy.
+        "img-src 'self' https: data:",
         "style-src 'unsafe-inline'",
         "script-src 'self'",
         "connect-src 'self'",
+        "font-src 'self' data:",
+        "media-src 'self' https:",
+        f"frame-src {frame_src}" if frame_src else "frame-src 'none'",
         "form-action 'self'",
         "base-uri 'none'",
-        "frame-ancestors 'none'",
+        # The editor shows the draft in a same-origin iframe; the live
+        # page must not be framable at all.
+        "frame-ancestors 'self'" if preview else "frame-ancestors 'none'",
     ]
-)
-# The editor shows the draft in a same-origin iframe.
-PREVIEW_CSP = PUBLIC_PAGE_CSP.replace("frame-ancestors 'none'", "frame-ancestors 'self'")
+    return "; ".join(directives)
+
+
+PUBLIC_PAGE_CSP = _page_csp()
+PREVIEW_CSP = _page_csp(preview=True)
 
 
 async def _form_fields(tenant_id: int, blocks: list[dict]) -> dict[str, list]:
