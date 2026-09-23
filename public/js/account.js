@@ -14,11 +14,12 @@
     const tab = ctx.params.tab || 'profile';
     mount(ctx.el, ui.spinner());
 
-    const [{ profile }, sessions, roles, sites] = await Promise.all([
+    // Roles & permissions and Sites are no longer tabs here, so neither
+    // is fetched. Both APIs stay; any override already saved still
+    // applies — it is only edited elsewhere now.
+    const [{ profile }, sessions] = await Promise.all([
       api.get('/api/profile'),
       api.get('/api/sessions'),
-      api.get('/api/roles').catch(() => null),
-      api.get('/api/platform/my-sites').catch(() => null),
     ]);
 
     ctx.setHead('Account', `${profile.display_name} · ${profile.role}`);
@@ -27,16 +28,12 @@
       ['profile', 'Profile'],
       ['security', 'Security', profile.totp_enabled ? null : '!'],
       ['sessions', 'Sessions', sessions.sessions.length],
-      roles ? ['roles', 'Roles & permissions'] : null,
-      sites ? ['sites', 'Sites', sites.sites.length] : null,
-    ].filter(Boolean), tab);
+    ], tab);
 
     const panes = {
       profile: () => profilePane(ctx, profile),
       security: () => securityPane(ctx, profile),
       sessions: () => sessionsPane(ctx, sessions),
-      roles: () => rolesPane(ctx, roles),
-      sites: () => sitesPane(ctx, sites, profile),
     };
     mount(ctx.el, [strip, (panes[tab] || panes.profile)()]);
   }

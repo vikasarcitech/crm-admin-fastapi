@@ -349,6 +349,14 @@
   async function openSubmissions(ctx, form) {
     const page = 1;
     const data = await api.get(`/api/forms/${form.id}/submissions${api.qs({ page })}`);
+    // Field labels from the form definition, so a submission reads
+    // "Phone", not "phone" — and a field since renamed still shows the
+    // value it was submitted under rather than disappearing.
+    const labels = Object.fromEntries((form.fields || []).map((f) => [f.name, f.label || f.name]));
+    const nice = (key) => labels[key] || key.replace(/_/g, ' ').replace(/^./, (c) => c.toUpperCase());
+    const summary = (s) => Object.entries(s.payload || {})
+      .map(([k, v]) => `${nice(k)}: ${String(v)}`).join(' · ');
+
     openDrawer({
       title: `${form.name} — submissions`,
       subtitle: `${data.total} logged`,
@@ -359,16 +367,66 @@
       body: table([
         { label: 'When', class: 'cell-mono', cell: (s) => formatDate(s.created_at, true) },
         {
-          label: 'Payload',
-          cell: (s) => h('div.kv', {}, Object.entries(s.payload || {}).slice(0, 8).map(([k, v]) =>
-            h('div', {}, [h('code', { text: k }), h('span', { text: ` ${String(v).slice(0, 80)}` })]))),
+          label: 'Submitted',
+          cell: (s) => [
+            h('div.cell-name', { text: s.payload?.full_name || s.payload?.name || s.payload?.email || '(no name)' }),
+            h('div.cell-meta', { text: summary(s) || 'empty submission' }),
+          ],
         },
         { label: 'Lead', cell: (s) => (s.lead_id ? s.full_name || `#${s.lead_id}` : '—') },
         {
           label: 'Status',
           cell: (s) => (s.is_spam ? badge(s.spam_reason || 'spam', 'off') : badge('ok', 'ok')),
         },
+        {
+          label: '',
+          cell: (s) => actionButton('View', () => viewSubmission(form, s, nice), { small: true }),
+        },
       ], data.submissions, { empty: 'No submissions yet.' }),
+    });
+  }
+
+  /**
+   * One submission, in full: every field the visitor filled in, then
+   * where they came from and what the spam checks made of it. A nested
+   * drawer, so closing it returns to the list.
+   */
+  function viewSubmission(form, s, nice) {
+    const payload = s.payload || {};
+    const rows = Object.entries(payload);
+    const meta = [
+      ['Submitted', formatDate(s.created_at, true)],
+      ['Form', form.name],
+      ['Lead', s.lead_id ? `${s.full_name || 'lead'} #${s.lead_id}${s.lead_status ? ` · ${s.lead_status}` : ''}` : 'Not saved as a lead'],
+      ['Status', s.is_spam ? `Marked spam — ${s.spam_reason || 'no reason given'}` : 'Accepted'],
+      ['IP address', s.ip || '—'],
+      ['Browser', s.user_agent || '—'],
+    ];
+
+    openDrawer({
+      title: payload.full_name || payload.name || payload.email || 'Submission',
+      subtitle: `${form.name} · ${formatDate(s.created_at, true)}`,
+      body: [
+        h('h3', { text: 'What they filled in' }),
+        rows.length
+          ? h('dl.sub-fields', {}, rows.map(([key, value]) => h('div', {}, [
+            h('dt', { text: nice(key) }),
+            h('dd', {}, [
+              // An email or phone is there to be acted on, so it is a link.
+              /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(value))
+                ? h('a', { href: `mailto:${value}`, text: String(value) })
+                : (key === 'phone' && String(value).trim()
+                  ? h('a', { href: `tel:${String(value).replace(/[^\d+]/g, '')}`, text: String(value) })
+                  : h('span', { text: String(value) })),
+            ]),
+          ])))
+          : h('p.muted', { text: 'This submission carried no fields.' }),
+        h('hr'),
+        h('h3', { text: 'Where it came from' }),
+        h('dl.sub-fields.sub-meta', {}, meta.map(([label, value]) => h('div', {}, [
+          h('dt', { text: label }), h('dd', { text: String(value) }),
+        ]))),
+      ],
     });
   }
 

@@ -811,11 +811,11 @@
       ],
     },
     form: {
-      label: 'Lead form', group: 'Marketing',
+      label: 'Contact form', group: 'Marketing',
       make: () => ({ type: 'form', form_slug: '', heading: 'Get in touch', button_label: 'Send' }),
       summary: (b) => b.form_slug ? `form: ${b.form_slug}` : 'pick a form',
       fields: [
-        ['form_slug', 'Form', 'formselect'],
+        ['form_slug', 'Which form', 'formselect'],
         ['heading', 'Heading (optional)', 'text'],
         ['button_label', 'Button label', 'text'],
       ],
@@ -902,6 +902,45 @@
     },
   };
 
+  // The fields a contact form starts with. The first four names are the
+  // ones the CRM maps to a lead by itself (full_name, email, phone,
+  // company, message), so a form made here fills a lead with no mapping.
+  const CONTACT_FIELDS = [
+    { name: 'full_name', label: 'Name', type: 'text', required: true },
+    { name: 'email', label: 'Email', type: 'email', required: true },
+    { name: 'phone', label: 'Phone', type: 'tel' },
+    { name: 'message', label: 'Message', type: 'textarea' },
+  ];
+
+  /**
+   * Create a contact form and return it.
+   *
+   * The form block used to need a form that already existed, which is a
+   * strange thing to ask of someone whose next click is "add a contact
+   * form to this page". Names collide (the API refuses a duplicate
+   * slug), so a second one becomes "Contact form 2".
+   */
+  async function createContactForm(name = 'Contact form') {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const candidate = attempt ? `${name} ${attempt + 1}` : name;
+      try {
+        const { form } = await api.post('/api/forms', { name: candidate, fields: CONTACT_FIELDS });
+        return form;
+      } catch (err) {
+        if (!/already uses that name/i.test(err.message)) throw err;
+      }
+    }
+    throw new Error('Could not create a form — every name was taken.');
+  }
+
+  /** An existing active form, or a new contact form. */
+  async function ensureContactForm() {
+    const { forms } = await api.get('/api/settings');
+    const active = (forms || []).filter((f) => f.is_active);
+    return active.find((f) => /contact/i.test(f.slug) || /contact/i.test(f.name)) || active[0]
+      || await createContactForm();
+  }
+
   const PALETTE_GROUPS = ['Layout', 'Content', 'Media', 'Marketing', 'Site'];
 
   // One line per block for the Add block panel — what it is for, in the
@@ -931,7 +970,7 @@
     logos: 'A strip of client or partner logos.',
     team: 'People with photos, roles and short bios.',
     notice: 'A slim announcement bar with a link.',
-    form: 'A lead form that saves to this CRM.',
+    form: 'A contact form — name, email, message. Submissions land in this CRM.',
     header: 'Site navigation: logo, menu links, a button.',
     footer: 'Link columns, social links and a copyright line.',
     contact: 'Address, phone, email and hours, with a map.',
@@ -956,10 +995,13 @@
       mk('media_text', { heading: 'Our story', body: 'How it started, and where it is going.' }),
       mk('features', { heading: 'What we value', style: 'icons' }), mk('stats'), mk('team'), mk('cta', { heading: 'Work with us', style: 'tint' }), mk('footer'),
     ]],
-    ['contact', 'Contact page', 'Header, contact details with a map, lead form, footer.', () => [
-      mk('header'), mk('heading', { text: 'Get in touch', sub: 'We reply within one business day.', align: 'center' }),
-      mk('contact', { show_map: true }), mk('form'), mk('footer'),
-    ]],
+    ['contact', 'Contact page', 'Header, contact details with a map, a contact form, footer.', async () => {
+      const form = await ensureContactForm();
+      return [
+        mk('header'), mk('heading', { text: 'Get in touch', sub: 'We reply within one business day.', align: 'center' }),
+        mk('contact', { show_map: true }), mk('form', { form_slug: form.slug }), mk('footer'),
+      ];
+    }],
     ['blank', 'Blank page', 'Start from nothing.', () => []],
   ];
 
@@ -1034,6 +1076,325 @@
     return { input, node: h('div', {}, [input, preview]), value: () => slugify(input.value) };
   }
 
+  // ------------------------------------------------- field controls
+  /**
+   * One control for one field spec. Used for a block's own fields and
+   * for the fields of every item in a repeater, so the two never
+   * disagree about what "an image field" is. Returns { node, read }.
+   */
+  function makeControl([key, label, kind, options, coerce], value) {
+    let node;
+    let read;
+    if (kind === 'toggle') {
+      node = select(options, value !== false, null);
+      read = () => node.value === 'true';
+    } else if (kind === 'check') {
+      node = h('input', { type: 'checkbox', checked: Boolean(value) });
+      read = () => node.checked;
+    } else if (kind === 'textarea' || kind === 'rich') {
+      node = h('textarea', { rows: kind === 'rich' ? 14 : (Number(options) || 5), value: value || '' });
+      read = () => node.value;
+    } else if (kind === 'select') {
+      node = select(options, value, null);
+      read = () => (coerce ? coerce(node.value) : node.value);
+    } else if (kind === 'formselect') {
+      // Making a form is part of adding one to a page, so the picker
+      // offers it rather than sending someone to another screen.
+      const NEW = '__new__';
+      const options = () => [['', 'Choose a form…'], ...currentFormOptions, [NEW, '+ Create a new contact form…']];
+      node = select(options(), value, async (e) => {
+        if (e.target.value !== NEW) return;
+        node.disabled = true;
+        try {
+          const form = await createContactForm();
+          currentFormOptions = [...currentFormOptions, [form.slug, form.name]];
+          mount(node, options().map(([val, label]) =>
+            h('option', { value: val, selected: val === form.slug, text: label })));
+          node.value = form.slug;
+          toast(`“${form.name}” created — name, email, phone and message.`);
+        } catch (err) {
+          toast(err.message, 'error');
+          node.value = value || '';
+        } finally {
+          node.disabled = false;
+        }
+      });
+      read = () => (node.value === NEW ? '' : node.value);
+    } else if (kind === 'number') {
+      const [min, max] = options || [0, 100];
+      node = h('input', { type: 'number', min, max, value: value ?? '' });
+      read = () => Number(node.value);
+    } else if (kind === 'image') {
+      const input = h('input', { type: 'text', value: value || '', placeholder: 'https://… or pick from the library' });
+      const thumb = h('img.pb-image-thumb', { alt: '', src: value || '', hidden: !value });
+      const sync = () => {
+        const url = input.value.trim();
+        thumb.hidden = !url;
+        if (url) thumb.src = url;
+      };
+      input.addEventListener('input', sync);
+      node = h('div.pb-image-field', {}, [thumb, input, h('button.btn.btn-sm', {
+        type: 'button', text: 'Browse',
+        onclick: () => pickImage((url) => { input.value = url; sync(); }),
+      })]);
+      read = () => input.value.trim();
+    } else if (kind === 'color') {
+      // A colour input cannot be empty, so "no colour" is its own switch.
+      const use = h('input', { type: 'checkbox', checked: Boolean(value) });
+      const color = h('input', { type: 'color', value: value || '#ffffff' });
+      color.addEventListener('input', () => { use.checked = true; });
+      node = h('div.pb-color-field', {}, [color, h('label.pb-check', { style: 'margin:0' }, [use, 'use this colour'])]);
+      read = () => (use.checked ? color.value : '');
+    } else if (kind === 'list') {
+      return makeRepeater(options, value);
+    } else {
+      node = h('input', { type: 'text', value: value ?? '' });
+      read = () => (coerce ? coerce(node.value) : node.value);
+    }
+    return { node, read };
+  }
+
+  /** Label + control, in the shape each kind reads best in. */
+  function fieldFor(spec, node, { toolbar = false } = {}) {
+    const [, label, kind] = spec;
+    if (kind === 'check') return h('label.pb-check', {}, [node, label]);
+    if (toolbar && (kind === 'textarea' || kind === 'rich')) return field(label, mdToolbar(node, kind === 'rich'));
+    return field(label, node);
+  }
+
+  /**
+   * A repeater: the items of a gallery, the plans of a pricing table.
+   * Each item is a card of its own controls with move/remove buttons;
+   * the DOM nodes are kept across reorders, so typing is never lost.
+   */
+  function makeRepeater({ label: itemLabel, fields, max = 24 }, items) {
+    const list = h('div.pb-items');
+    const rows = [];
+    const add = h('button.btn.btn-sm.pb-items-add', {
+      type: 'button', text: `+ Add ${itemLabel.toLowerCase()}`,
+      onclick: () => { addRow({}); paint(); rows[rows.length - 1].node.querySelector('input,textarea,select')?.focus(); },
+    });
+
+    function paint() {
+      rows.forEach((row, i) => { row.num.textContent = `${itemLabel} ${i + 1}`; });
+      mount(list, rows.length ? rows.map((row) => row.node)
+        : h('p.muted', { text: `No ${itemLabel.toLowerCase()}s yet.` }));
+      add.disabled = rows.length >= max;
+    }
+    function move(row, dir) {
+      const i = rows.indexOf(row);
+      const j = i + dir;
+      if (j < 0 || j >= rows.length) return;
+      [rows[i], rows[j]] = [rows[j], rows[i]];
+      paint();
+    }
+    function addRow(item) {
+      const controls = fields.map((spec) => ({ key: spec[0], ...makeControl(spec, item[spec[0]]) }));
+      const num = h('span');
+      const row = { controls, num, node: null };
+      row.node = h('div.pb-item', {}, [
+        h('div.pb-item-head', {}, [
+          num, h('div.spacer'),
+          h('button.icon-btn', { type: 'button', text: '↑', 'aria-label': 'Move up', onclick: () => move(row, -1) }),
+          h('button.icon-btn', { type: 'button', text: '↓', 'aria-label': 'Move down', onclick: () => move(row, 1) }),
+          h('button.icon-btn', { type: 'button', text: '×', 'aria-label': 'Remove', onclick: () => { rows.splice(rows.indexOf(row), 1); paint(); } }),
+        ]),
+        ...controls.map((c, i) => fieldFor(fields[i], c.node)),
+      ]);
+      rows.push(row);
+    }
+
+    (Array.isArray(items) ? items : []).forEach(addRow);
+    paint();
+    return {
+      node: h('div', {}, [list, add]),
+      read: () => rows.map((row) => Object.fromEntries(row.controls.map((c) => [c.key, c.read()]))),
+    };
+  }
+
+  /** The media library, as a picker: a nested drawer of thumbnails. */
+  function pickImage(onPick) {
+    const grid = h('div.pb-media-grid', {}, spinner());
+    const search = h('input', { type: 'search', placeholder: 'Search by file name, title or alt text' });
+    let timer = null;
+
+    async function load() {
+      const q = search.value.trim();
+      try {
+        const { media } = await api.get(`/api/media?mime=image&per_page=120${q ? `&q=${encodeURIComponent(q)}` : ''}`);
+        const ready = (media || []).filter((m) => m.url);
+        mount(grid, ready.length ? ready.map((m) => h('button.pb-media-pick', {
+          type: 'button', title: m.original_filename,
+          onclick: () => { onPick(m.url); closeDrawer(); },
+        }, [h('img', { src: m.url, alt: '', loading: 'lazy' }), h('span', { text: m.original_filename })]))
+          : h('p.muted', { text: q ? 'No images match.' : 'No images yet — upload some under Media.' }));
+      } catch (err) { mount(grid, h('p.muted', { text: err.message })); }
+    }
+    search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
+    openDrawer({
+      title: 'Choose an image',
+      subtitle: 'From the media library. Upload new files under Media.',
+      body: [field('Search', search), grid],
+    });
+    load();
+  }
+
+  // ------------------------------------------------------ block editor
+  let currentFormOptions = [];
+
+  /**
+   * Edit one block in a drawer. `onApply(block)` receives the edited
+   * block: the page editor writes it back into its list and saves; the
+   * site header/footer panel saves it as a setting. Same drawer, same
+   * fields, whichever it is.
+   */
+  function openBlockEditor(block, { formOptions = [], onApply, title = null } = {}) {
+    currentFormOptions = formOptions;
+    const def = BLOCKS[block.type];
+    const controls = def.fields.map((spec) => ({ key: spec[0], spec, ...makeControl(spec, block[spec[0]]) }));
+
+    // Design: the same panel under every block, folded away.
+    const design = block.design || {};
+    const designControls = DESIGN_FIELDS.map((spec) => ({ key: spec[0], spec, ...makeControl(spec, design[spec[0]]) }));
+    const byKey = Object.fromEntries(designControls.map((c) => [c.key, c]));
+    const designRows = designControls.map((c) => {
+      const row = fieldFor(c.spec, c.node);
+      c.row = row;
+      return row;
+    });
+    // Only the colour picker for a custom background, only the image
+    // picker for an image background.
+    const syncDesign = () => {
+      const bg = byKey.bg.node.value;
+      byKey.bg_color.row.hidden = bg !== 'custom';
+      byKey.bg_image.row.hidden = bg !== 'image';
+    };
+    byKey.bg.node.addEventListener('change', syncDesign);
+    syncDesign();
+
+    /** Read every control back into the block object. */
+    function collect() {
+      controls.forEach(({ key, read }) => { block[key] = read(); });
+      block.design = Object.fromEntries(designControls.map((c) => [c.key, c.read()]));
+    }
+
+    const submit = h('button.btn.btn-primary', {
+      type: 'button', text: 'Apply',
+      onclick: async () => {
+        collect();
+        submit.disabled = true;
+        try {
+          await onApply(block);
+          closeDrawer();
+        } catch (err) {
+          toast(err.message, 'error');
+          submit.disabled = false;
+        }
+      },
+    });
+
+    const summaryNote = designSummary(block.design);
+    openDrawer({
+      // Lowercased so it reads as a sentence ("Edit hero") — but an
+      // all-caps label is an acronym and must survive as one.
+      title: title || `Edit ${def.label === def.label.toUpperCase() ? def.label : def.label.toLowerCase()}`,
+      subtitle: 'Changes save to the draft — the live page updates on publish.',
+      body: [
+        ...controls.map(({ spec, node }) => fieldFor(spec, node, { toolbar: true })),
+        h('details.pb-design', { open: summaryNote ? 'open' : null }, [
+          h('summary', {}, ['Design', summaryNote ? h('small', { text: summaryNote }) : h('small', { text: 'background, spacing, width, motion' })]),
+          h('div.pb-design-body', {}, [h('div.pb-design-grid', {}, designRows)]),
+        ]),
+        submit,
+      ],
+    });
+  }
+
+  // ================================================== site header & footer
+  /**
+   * The site-wide header and footer: two blocks, stored once
+   * (settings key site_chrome) and rendered around every page. Edited
+   * with the same drawer a page's own header block uses; a page can opt
+   * out in its settings, or bring its own header/footer block, which
+   * then takes precedence.
+   */
+  async function siteChromePanel(ctx) {
+    const admin = isAdmin(ctx.session.user);
+    let chrome = { enabled: true, header: null, footer: null };
+    let formOptions = [];
+    try {
+      const res = await api.get('/api/settings');
+      chrome = { ...chrome, ...(res.settings?.site_chrome || {}) };
+      formOptions = (res.forms || []).filter((f) => f.is_active).map((f) => [f.slug, f.name]);
+    } catch (err) { toast(err.message, 'error'); }
+
+    const body = h('div.pb-chrome-body');
+    const save = async (next) => {
+      chrome = next;
+      await api.put('/api/settings/site_chrome', { value: chrome });
+      toast('Saved — every page shows it.');
+      paint();
+    };
+    const edit = (part) => {
+      const def = BLOCKS[part];
+      const block = chrome[part] ? JSON.parse(JSON.stringify(chrome[part])) : def.make();
+      openBlockEditor(block, {
+        formOptions,
+        title: part === 'header' ? 'Site header' : 'Site footer',
+        onApply: (edited) => save({ ...chrome, [part]: edited }),
+      });
+    };
+    const row = (part, label, summary) => h('div.pb-chrome-row', {}, [
+      h('div.pb-chrome-main', {}, [
+        h('div.cell-name', { text: label }),
+        h('div.cell-meta', { text: chrome[part] ? summary(chrome[part]) : 'Not set up yet' }),
+      ]),
+      admin ? h('div.row-actions', {}, [
+        h('button.btn.btn-sm', { type: 'button', text: chrome[part] ? 'Edit' : 'Set up', onclick: () => edit(part) }),
+        chrome[part] ? h('button.btn.btn-sm', {
+          type: 'button', text: 'Remove',
+          onclick: () => {
+            // eslint-disable-next-line no-alert
+            if (window.confirm(`Remove the site ${part} from every page?`)) save({ ...chrome, [part]: null });
+          },
+        }) : null,
+      ]) : null,
+    ]);
+
+    function paint() {
+      mount(body, [
+        row('header', 'Header', (b) => `${b.logo_text || (b.logo_src ? 'logo' : 'no brand')} · ${(b.links || []).length} link(s)`
+          + (b.button_label ? ` · button “${b.button_label}”` : '')),
+        row('footer', 'Footer', (b) => `${b.brand || 'no brand'} · ${(b.columns || []).length} column(s) · ${(b.social || []).length} social`),
+      ]);
+    }
+    paint();
+
+    const toggle = admin ? h('label.pb-check', { style: 'margin:0' }, [
+      h('input', {
+        type: 'checkbox', checked: chrome.enabled !== false,
+        onchange: (e) => save({ ...chrome, enabled: e.target.checked }),
+      }),
+      'Show on every page',
+    ]) : null;
+
+    return h('section.panel.pb-chrome', {}, [
+      h('div.panel-head', {}, [
+        h('h2', { text: 'Site header & footer' }),
+        h('div.spacer'),
+        toggle,
+      ]),
+      h('div.panel-body', {}, [
+        h('p.muted.pb-chrome-hint', {
+          text: 'Set up once, shown on every page — logo, menu links such as About us or '
+            + 'Contact, a button; and the footer. A page can hide them in its settings, '
+            + 'or bring its own header/footer block, which then takes their place.',
+        }),
+        body,
+      ]),
+    ]);
+  }
+
   // ================================================================ list
   async function pages(ctx) {
     if (ctx.params.edit) return editor(ctx, ctx.params.edit);
@@ -1045,16 +1406,18 @@
     ctx.setHead('Pages', 'Build and publish web pages without touching code.', admin ? newBtn : null);
     mount(ctx.el, spinner());
 
-    const { pages: list } = await api.get('/api/pages');
+    const [{ pages: list }, chromePanel] = await Promise.all([api.get('/api/pages'), siteChromePanel(ctx)]);
     const tenant = ctx.session.user.tenantSlug;
 
     if (!list.length) {
-      return mount(ctx.el, emptyState('No pages yet',
+      return mount(ctx.el, [chromePanel, emptyState('No pages yet',
         'Create a page, arrange its blocks, then publish it at its own URL.',
-        admin ? h('button.btn', { type: 'button', text: 'Create your first page', onclick: () => newPageForm(ctx) }) : null));
+        admin ? h('button.btn', { type: 'button', text: 'Create your first page', onclick: () => newPageForm(ctx) }) : null)]);
     }
 
-    mount(ctx.el, h('table.list', {}, [
+    ctx.el.textContent = '';
+    ctx.el.appendChild(chromePanel);
+    ctx.el.appendChild(h('table.list', {}, [
       h('thead', {}, h('tr', {}, [
         h('th', { text: 'Page' }), h('th', { text: 'Status' }),
         h('th', { class: 'hide-sm', text: 'Last edited' }), h('th', { text: '' }),
@@ -1277,10 +1640,11 @@
           h('div.pb-templates', {}, TEMPLATES.map(([key, label, desc, make]) => h('button.pb-template', {
             type: 'button',
             onclick: async () => {
-              blocks = make();
+              try { blocks = await make(); } catch (err) { return toast(err.message, 'error'); }
               await saveBlocks();
               if (key !== 'blank') toast(`${label} added — click any block to edit it`);
               else openAddBlock();
+              return undefined;
             },
           }, [h('strong', { text: label }), h('span', { text: desc })]))),
         ]) : h('p.muted', { text: 'No blocks yet.' }));
@@ -1347,203 +1711,15 @@
       mount(sideBody, next === 'html' ? [codeSection] : [blocksPanel]);
     }
 
-    // ------------------------------------------------- field controls
-    /**
-     * One control for one field spec. Used for a block's own fields and
-     * for the fields of every item in a repeater, so the two never
-     * disagree about what "an image field" is. Returns { node, read }.
-     */
-    function makeControl([key, label, kind, options, coerce], value) {
-      let node;
-      let read;
-      if (kind === 'toggle') {
-        node = select(options, value !== false, null);
-        read = () => node.value === 'true';
-      } else if (kind === 'check') {
-        node = h('input', { type: 'checkbox', checked: Boolean(value) });
-        read = () => node.checked;
-      } else if (kind === 'textarea' || kind === 'rich') {
-        node = h('textarea', { rows: kind === 'rich' ? 14 : (Number(options) || 5), value: value || '' });
-        read = () => node.value;
-      } else if (kind === 'select') {
-        node = select(options, value, null);
-        read = () => (coerce ? coerce(node.value) : node.value);
-      } else if (kind === 'formselect') {
-        node = select([['', 'Choose a form…'], ...formOptions], value, null);
-        read = () => node.value;
-      } else if (kind === 'number') {
-        const [min, max] = options || [0, 100];
-        node = h('input', { type: 'number', min, max, value: value ?? '' });
-        read = () => Number(node.value);
-      } else if (kind === 'image') {
-        const input = h('input', { type: 'text', value: value || '', placeholder: 'https://… or pick from the library' });
-        const thumb = h('img.pb-image-thumb', { alt: '', src: value || '', hidden: !value });
-        const sync = () => {
-          const url = input.value.trim();
-          thumb.hidden = !url;
-          if (url) thumb.src = url;
-        };
-        input.addEventListener('input', sync);
-        node = h('div.pb-image-field', {}, [thumb, input, h('button.btn.btn-sm', {
-          type: 'button', text: 'Browse',
-          onclick: () => pickImage((url) => { input.value = url; sync(); }),
-        })]);
-        read = () => input.value.trim();
-      } else if (kind === 'color') {
-        // A colour input cannot be empty, so "no colour" is its own switch.
-        const use = h('input', { type: 'checkbox', checked: Boolean(value) });
-        const color = h('input', { type: 'color', value: value || '#ffffff' });
-        color.addEventListener('input', () => { use.checked = true; });
-        node = h('div.pb-color-field', {}, [color, h('label.pb-check', { style: 'margin:0' }, [use, 'use this colour'])]);
-        read = () => (use.checked ? color.value : '');
-      } else if (kind === 'list') {
-        return makeRepeater(options, value);
-      } else {
-        node = h('input', { type: 'text', value: value ?? '' });
-        read = () => (coerce ? coerce(node.value) : node.value);
-      }
-      return { node, read };
-    }
-
-    /** Label + control, in the shape each kind reads best in. */
-    function fieldFor(spec, node, { toolbar = false } = {}) {
-      const [, label, kind] = spec;
-      if (kind === 'check') return h('label.pb-check', {}, [node, label]);
-      if (toolbar && (kind === 'textarea' || kind === 'rich')) return field(label, mdToolbar(node, kind === 'rich'));
-      return field(label, node);
-    }
-
-    /**
-     * A repeater: the items of a gallery, the plans of a pricing table.
-     * Each item is a card of its own controls with move/remove buttons;
-     * the DOM nodes are kept across reorders, so typing is never lost.
-     */
-    function makeRepeater({ label: itemLabel, fields, max = 24 }, items) {
-      const list = h('div.pb-items');
-      const rows = [];
-      const add = h('button.btn.btn-sm.pb-items-add', {
-        type: 'button', text: `+ Add ${itemLabel.toLowerCase()}`,
-        onclick: () => { addRow({}); paint(); rows[rows.length - 1].node.querySelector('input,textarea,select')?.focus(); },
-      });
-
-      function paint() {
-        rows.forEach((row, i) => { row.num.textContent = `${itemLabel} ${i + 1}`; });
-        mount(list, rows.length ? rows.map((row) => row.node)
-          : h('p.muted', { text: `No ${itemLabel.toLowerCase()}s yet.` }));
-        add.disabled = rows.length >= max;
-      }
-      function move(row, dir) {
-        const i = rows.indexOf(row);
-        const j = i + dir;
-        if (j < 0 || j >= rows.length) return;
-        [rows[i], rows[j]] = [rows[j], rows[i]];
-        paint();
-      }
-      function addRow(item) {
-        const controls = fields.map((spec) => ({ key: spec[0], ...makeControl(spec, item[spec[0]]) }));
-        const num = h('span');
-        const row = { controls, num, node: null };
-        row.node = h('div.pb-item', {}, [
-          h('div.pb-item-head', {}, [
-            num, h('div.spacer'),
-            h('button.icon-btn', { type: 'button', text: '↑', 'aria-label': 'Move up', onclick: () => move(row, -1) }),
-            h('button.icon-btn', { type: 'button', text: '↓', 'aria-label': 'Move down', onclick: () => move(row, 1) }),
-            h('button.icon-btn', { type: 'button', text: '×', 'aria-label': 'Remove', onclick: () => { rows.splice(rows.indexOf(row), 1); paint(); } }),
-          ]),
-          ...controls.map((c, i) => fieldFor(fields[i], c.node)),
-        ]);
-        rows.push(row);
-      }
-
-      (Array.isArray(items) ? items : []).forEach(addRow);
-      paint();
-      return {
-        node: h('div', {}, [list, add]),
-        read: () => rows.map((row) => Object.fromEntries(row.controls.map((c) => [c.key, c.read()]))),
-      };
-    }
-
-    /** The media library, as a picker: a nested drawer of thumbnails. */
-    function pickImage(onPick) {
-      const grid = h('div.pb-media-grid', {}, spinner());
-      const search = h('input', { type: 'search', placeholder: 'Search by file name, title or alt text' });
-      let timer = null;
-
-      async function load() {
-        const q = search.value.trim();
-        try {
-          const { media } = await api.get(`/api/media?mime=image&per_page=120${q ? `&q=${encodeURIComponent(q)}` : ''}`);
-          const ready = (media || []).filter((m) => m.url);
-          mount(grid, ready.length ? ready.map((m) => h('button.pb-media-pick', {
-            type: 'button', title: m.original_filename,
-            onclick: () => { onPick(m.url); closeDrawer(); },
-          }, [h('img', { src: m.url, alt: '', loading: 'lazy' }), h('span', { text: m.original_filename })]))
-            : h('p.muted', { text: q ? 'No images match.' : 'No images yet — upload some under Media.' }));
-        } catch (err) { mount(grid, h('p.muted', { text: err.message })); }
-      }
-      search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
-      openDrawer({
-        title: 'Choose an image',
-        subtitle: 'From the media library. Upload new files under Media.',
-        body: [field('Search', search), grid],
-      });
-      load();
-    }
-
     // ------------------------------------------------------ block editor
+    /** The shared block drawer, writing back into this page's list. */
     function blockDrawer(block, index) {
-      const def = BLOCKS[block.type];
-      const controls = def.fields.map((spec) => ({ key: spec[0], spec, ...makeControl(spec, block[spec[0]]) }));
-
-      // Design: the same panel under every block, folded away.
-      const design = block.design || {};
-      const designControls = DESIGN_FIELDS.map((spec) => ({ key: spec[0], spec, ...makeControl(spec, design[spec[0]]) }));
-      const byKey = Object.fromEntries(designControls.map((c) => [c.key, c]));
-      const designRows = designControls.map((c) => {
-        const row = fieldFor(c.spec, c.node);
-        c.row = row;
-        return row;
-      });
-      // Only the colour picker for a custom background, only the image
-      // picker for an image background.
-      const syncDesign = () => {
-        const bg = byKey.bg.node.value;
-        byKey.bg_color.row.hidden = bg !== 'custom';
-        byKey.bg_image.row.hidden = bg !== 'image';
-      };
-      byKey.bg.node.addEventListener('change', syncDesign);
-      syncDesign();
-
-      /** Read every control back into the block object. */
-      function collect() {
-        controls.forEach(({ key, read }) => { block[key] = read(); });
-        block.design = Object.fromEntries(designControls.map((c) => [c.key, c.read()]));
-        blocks[index] = block;
-      }
-
-      const submit = h('button.btn.btn-primary', {
-        type: 'button', text: 'Apply',
-        onclick: async () => {
-          collect();
-          closeDrawer();
+      openBlockEditor(block, {
+        formOptions,
+        onApply: async (edited) => {
+          blocks[index] = edited;
           await saveBlocks();
         },
-      });
-
-      const summaryNote = designSummary(block.design);
-      openDrawer({
-        // Lowercased so it reads as a sentence ("Edit hero") — but an
-        // all-caps label is an acronym and must survive as one.
-        title: `Edit ${def.label === def.label.toUpperCase() ? def.label : def.label.toLowerCase()}`,
-        subtitle: 'Changes save to the draft — the live page updates on publish.',
-        body: [
-          ...controls.map(({ spec, node }) => fieldFor(spec, node, { toolbar: true })),
-          h('details.pb-design', { open: summaryNote ? 'open' : null }, [
-            h('summary', {}, ['Design', summaryNote ? h('small', { text: summaryNote }) : h('small', { text: 'background, spacing, width, motion' })]),
-            h('div.pb-design-body', {}, [h('div.pb-design-grid', {}, designRows)]),
-          ]),
-          submit,
-        ],
       });
     }
 
@@ -1591,6 +1767,7 @@
       const secondary = h('input', { type: 'color', value: theme.secondary || '#d9822b' });
       const headingFont = select([['same', 'Same as body text'], ...FONTS], theme.heading_font || 'same');
       const radius = select([['sharp', 'Sharp'], ['soft', 'Soft'], ['round', 'Round']], theme.radius || 'soft');
+      const chrome = select([['site', 'Show the site header & footer'], ['none', 'Hide them on this page']], theme.chrome || 'site');
       const width = select([['narrow', 'Narrow'], ['normal', 'Normal'], ['wide', 'Wide']], theme.max_width || 'normal');
 
       // Images only, newest first. Lazy: a page whose meta nobody edits
@@ -1637,7 +1814,7 @@
               theme: {
                 primary: primary.value, secondary: secondary.value,
                 background: background.value, text: text.value,
-                heading_font: headingFont.value, radius: radius.value,
+                heading_font: headingFont.value, radius: radius.value, chrome: chrome.value,
                 font: font.value, max_width: width.value,
               },
             }));
@@ -1684,6 +1861,7 @@
           field('Typeface', font),
           field('Heading typeface', headingFont),
           field('Corners (buttons, cards, images)', radius),
+          field('Site header & footer', chrome),
           field('Content width', width),
           submit,
         ],
@@ -1725,12 +1903,23 @@
 
     // ------------------------------------------------------------ layout
     /** Add a block of `type` at position `at` (default: the end). */
-    const addBlock = (type, def, at = blocks.length) => {
+    const addBlock = async (type, def, at = blocks.length) => {
       const block = def.make();
+      // A contact form with no form behind it cannot be saved, so the
+      // block arrives already pointed at one — a form that exists, or a
+      // new one. The picker in the drawer can still change it.
+      if (type === 'form' && !block.form_slug) {
+        try {
+          const form = await ensureContactForm();
+          block.form_slug = form.slug;
+          if (!formOptions.some(([slug]) => slug === form.slug)) formOptions.push([form.slug, form.name]);
+        } catch (err) { return toast(err.message, 'error'); }
+      }
       blocks.splice(at, 0, block);
       if (type === 'html') { codeIndex = at; setSideView('html'); saveBlocks(); }
       else if (def.fields.length) blockDrawer(block, at);
       else saveBlocks();
+      return undefined;
     };
 
     /**
@@ -1751,7 +1940,7 @@
             h('div.pb-palette-label', { text: group }),
             h('div.pb-add-grid', {}, members.map(([type, def]) => h('button.pb-add-card', {
               type: 'button',
-              onclick: () => { closeDrawer(); addBlock(type, def, at); },
+              onclick: () => { closeDrawer(); addBlock(type, def, at).catch((err) => toast(err.message, 'error')); },
             }, [h('strong', { text: def.label }), h('span', { text: BLOCK_DESC[type] || '' })]))),
           ]) : null;
         }).filter(Boolean);

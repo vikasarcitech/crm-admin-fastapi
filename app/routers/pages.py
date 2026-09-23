@@ -15,9 +15,11 @@ from ..pagebuilder import (
     clean_block_html,
     clean_blocks,
     clean_page_seo,
+    clean_site_chrome,
     clean_theme,
     is_document,
     page_document,
+    with_site_chrome,
     render_page,
 )
 from ..sanitize import describe_changes
@@ -154,6 +156,16 @@ async def _form_fields(tenant_id: int, blocks: list[dict]) -> dict[str, list]:
         slugs,
     )
     return {row["slug"].lower(): row["fields"] for row in rows}
+
+
+async def _site_chrome(tenant_id: int) -> dict | None:
+    """The site's header and footer (settings key site_chrome), cleaned."""
+    row = await db.fetch_one(
+        "SELECT value FROM settings WHERE tenant_id = $1 AND key = 'site_chrome'", tenant_id
+    )
+    if not row or not isinstance(row["value"], dict):
+        return None
+    return clean_site_chrome(row["value"])
 
 
 def _absolute(url: str | None) -> str | None:
@@ -620,6 +632,7 @@ async def page_html(
     if document:
         return {"html": document, "document": True, "mode": page["mode"]}
 
+    blocks = with_site_chrome(blocks, await _site_chrome(user.tenant_id), page["theme"])
     head = await _head_context(
         tenant_id=user.tenant_id,
         tenant_slug=user.tenant_slug,
@@ -709,6 +722,9 @@ async def preview_page(
             },
         )
 
+    # The site header and footer go on in the preview exactly as they
+    # will on the live page; the block list itself stays the page's own.
+    blocks = with_site_chrome(blocks, await _site_chrome(user.tenant_id), page["theme"])
     head = await _head_context(
         tenant_id=user.tenant_id,
         tenant_slug=user.tenant_slug,
@@ -766,6 +782,7 @@ async def hosted_form(tenant_slug: str, form_slug: str) -> HTMLResponse:
         "heading": row["name"],
         "button_label": settings_.get("button_label") or "Send",
     }])
+    blocks = with_site_chrome(blocks, await _site_chrome(row["tenant_id"]), None)
     html = render_page(
         title=row["name"],
         description=None,
@@ -844,6 +861,7 @@ async def public_page(tenant_slug: str, page_path: str, request: Request) -> HTM
             },
         )
 
+    blocks = with_site_chrome(blocks, await _site_chrome(row["tenant_id"]), row["published_theme"])
     head = await _head_context(
         tenant_id=row["tenant_id"],
         tenant_slug=row["tenant_slug"],

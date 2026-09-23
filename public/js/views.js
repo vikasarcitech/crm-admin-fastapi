@@ -25,14 +25,6 @@
 
     const days = Number(ctx.params.days) || 30;
     const data = await api.get(`/api/dashboard${api.qs({ days })}`);
-    const t = data.totals;
-
-    const kpi = (label, value, note) =>
-      h('div.kpi', {}, [
-        h('div.kpi-label', { text: label }),
-        h('div.kpi-value', { text: String(value) }),
-        note ? h('div.kpi-note', { text: note }) : null,
-      ]);
 
     const peak = Math.max(1, ...data.byDay.map((d) => d.n));
     const ledger = h('div.ledger', {}, data.byDay.map((d) =>
@@ -53,15 +45,10 @@
       })
       : [h('tr', {}, h('td.muted', { colspan: 3, text: 'No attribution data yet.' }))];
 
+    // The lead-desk KPI row (win rate, won value, unworked) is gone with
+    // the Leads screens; what is left is the volume chart and where it
+    // comes from.
     mount(ctx.el, [
-      h('div.kpis', {}, [
-        kpi('Leads, last ' + days + ' days', t.period, `${t.total} all time`),
-        kpi('New in 24h', t.today, t.today ? 'Needs a first response' : 'Nothing new'),
-        kpi('Unworked', t.unworked, 'Still in New'),
-        kpi('Win rate', `${t.winRate}%`, `${t.won} won / ${t.lost} lost`),
-        kpi('Won value', t.won_value ? t.won_value.toLocaleString() : '0', 'Sum of closed deals'),
-      ]),
-
       h('div.split', {}, [
         h('div.stack', {}, [
           h('section.panel', {}, [
@@ -95,16 +82,14 @@
             h('div.panel-head', {}, [h('h2', { text: 'Latest leads' })]),
             data.recent.length
               ? h('table.list', {}, [
-                h('tbody', {}, data.recent.map((l) => h('tr', {
-                  onclick: () => ctx.navigate(`#/leads?open=${l.id}`),
-                  style: 'cursor:pointer',
-                }, [
+                // No click target: the Leads screen this used to open is
+                // not in the admin any more, so the row is just a row.
+                h('tbody', {}, data.recent.map((l) => h('tr', {}, [
                   h('td.rail', { class: `rail-${l.status}` }),
                   h('td', {}, [
                     h('div.cell-name', { text: l.full_name }),
                     h('div.cell-meta', { text: l.company || l.utm_source || 'direct' }),
                   ]),
-                  h('td', {}, statusPill(l.status)),
                   h('td.cell-mono', { text: relativeTime(l.created_at) }),
                 ]))),
               ])
@@ -126,10 +111,7 @@
           h('section.panel', {}, [
             h('div.panel-head', {}, [h('h2', { text: 'Follow-ups due' })]),
             data.followUps.length
-              ? h('table.list', {}, h('tbody', {}, data.followUps.map((l) => h('tr', {
-                onclick: () => ctx.navigate(`#/leads?open=${l.id}`),
-                style: 'cursor:pointer',
-              }, [
+              ? h('table.list', {}, h('tbody', {}, data.followUps.map((l) => h('tr', {}, [
                 h('td', {}, [
                   h('div.cell-name', { text: l.full_name }),
                   h('div.cell-meta', { text: STATUS_LABELS[l.status] }),

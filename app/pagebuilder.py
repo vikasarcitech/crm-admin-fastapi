@@ -41,7 +41,11 @@ FONT_STACKS = {
     "rounded": "ui-rounded, 'Hiragino Maru Gothic ProN', Quicksand, Comfortaa, 'Arial Rounded MT Bold', Calibri, sans-serif",
     "display": "'Iowan Old Style', 'Palatino Linotype', 'Book Antiqua', Palatino, 'URW Palladio L', P052, serif",
 }
-MAX_WIDTHS = {"narrow": "660px", "normal": "840px", "wide": "1080px"}
+# Content column widths, and the side gutter every one of them keeps.
+# The gutter is what stops text touching the screen edge on a phone; it
+# is the only horizontal padding a page has, so it is small and shared.
+MAX_WIDTHS = {"narrow": "900px", "normal": "1320px", "wide": "1560px"}
+PAGE_GUTTER = "8px"
 SPACER_SIZES = {"small": "20px", "medium": "48px", "large": "96px"}
 RADII = {"sharp": "0px", "soft": "6px", "round": "14px"}
 
@@ -54,6 +58,10 @@ DEFAULT_THEME = {
     "heading_font": "same",
     "radius": "soft",
     "max_width": "normal",
+    # Whether the site-wide header and footer wrap this page. "site" is
+    # the default every page gets; "none" is a landing page that wants
+    # nothing above its hero.
+    "chrome": "site",
 }
 
 # Per-block design: the layer that turns a list of content blocks into
@@ -841,7 +849,47 @@ def clean_theme(raw: Any) -> dict:
         theme["radius"] = source["radius"]
     if source.get("max_width") in MAX_WIDTHS:
         theme["max_width"] = source["max_width"]
+    if source.get("chrome") in ("site", "none"):
+        theme["chrome"] = source["chrome"]
     return theme
+
+
+# ------------------------------------------------------------ site chrome
+def clean_site_chrome(raw: Any) -> dict:
+    """The site-wide header and footer, validated as the blocks they are.
+
+    Stored once per site (settings key ``site_chrome``) and put around
+    every page at render time. They are ordinary header/footer blocks —
+    same cleaner, same renderer, same drawer in the editor — so there is
+    exactly one definition of what a header is.
+    """
+    source = raw if isinstance(raw, dict) else {}
+    chrome: dict[str, Any] = {"enabled": bool(source.get("enabled", True)), "header": None, "footer": None}
+    for part in ("header", "footer"):
+        block = source.get(part)
+        if isinstance(block, dict) and block.get("type", part) == part:
+            chrome[part] = clean_blocks([{**block, "type": part}])[0]
+    return chrome
+
+
+def with_site_chrome(blocks: list[dict], chrome: dict | None, theme: dict | None) -> list[dict]:
+    """The page's blocks with the site header first and footer last.
+
+    Skipped when the site has none, when the page's theme says "none",
+    or when the page already carries a block of that kind — an author
+    who put their own header on a page meant that one.
+    """
+    if not chrome or not chrome.get("enabled"):
+        return blocks
+    if (theme or {}).get("chrome", "site") == "none":
+        return blocks
+    kinds = {b.get("type") for b in blocks if isinstance(b, dict)}
+    out = list(blocks)
+    if chrome.get("header") and "header" not in kinds:
+        out.insert(0, chrome["header"])
+    if chrome.get("footer") and "footer" not in kinds:
+        out.append(chrome["footer"])
+    return out
 
 
 def clean_page_seo(raw: Any) -> dict:
@@ -1416,8 +1464,12 @@ def _apply_design(block: dict, markup: str, ctx: dict) -> str:
         style.append(f"--sec-text:{d['text_color']}")
     if d.get("padding", "none") != "none":
         classes.append(f"sec-pad-{d['padding']}")
-    if d.get("width", "content") != "content":
-        classes.append(f"sec-{d['width']}")
+    # A site header or footer is edge-to-edge by nature, so its design
+    # background is too — a content-wide colour band behind a full-width
+    # bar is never what anyone meant.
+    width = "full" if block.get("type") in ("header", "footer") else d.get("width", "content")
+    if width != "content":
+        classes.append(f"sec-{width}")
     if d.get("animate", "none") != "none":
         classes.append(f"sec-anim sec-anim-{d['animate']}")
         ctx["needs_motion_js"] = True
@@ -1604,8 +1656,21 @@ body {
   margin: 0; background: var(--bg); color: var(--text);
   font-family: var(--font); font-size: 17px; line-height: 1.65;
   -webkit-font-smoothing: antialiased;
+  /* The content column fills the window even when its content does
+     not, so a footer after it lands on the bottom edge instead of
+     floating halfway up a white screen. */
+  display: flex; flex-direction: column; min-height: 100vh;
 }
-.page { max-width: var(--maxw); margin: 0 auto; padding: 0 20px 80px; }
+body > .page { flex: 1 0 auto; }
+/* The footer brings the gap above itself; the column's own bottom
+   padding would only add to it. */
+body.has-footer > .page { padding-bottom: 0; }
+/* Out of the column the footer is already full width: the 100vw
+   breakout it uses inside the column would overflow by a scrollbar. */
+body > .site-footer, body > .sec {
+  flex: 0 0 auto; width: auto; margin-left: 0; margin-right: 0;
+}
+.page { max-width: var(--maxw); margin: 0 auto; padding: 0 var(--gutter) 80px; }
 .blk { margin: 28px 0; }
 .align-center { text-align: center; }
 h1, h2, h3, h4 { font-family: var(--hfont); }
@@ -1640,7 +1705,7 @@ hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--text) 15%, transp
 /* A cover hero bleeds past the content column and darkens its photo
    so white type reads on it. */
 .hero-cover {
-  width: 100vw; margin-left: calc(50% - 50vw); padding-left: 20px; padding-right: 20px;
+  width: 100vw; margin-left: calc(50% - 50vw); padding-left: var(--gutter); padding-right: var(--gutter);
   background: var(--hero-img) center / cover no-repeat; color: #fff; position: relative;
 }
 .hero-cover::before { content: ""; position: absolute; inset: 0; background: rgba(8, 12, 14, .5); }
@@ -1844,7 +1909,7 @@ hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--text) 15%, transp
 .contact-map iframe { height: 100%; min-height: 260px; }
 
 /* Header */
-.site-header { margin: 0 0 28px; width: 100vw; margin-left: calc(50% - 50vw); padding: 0 20px; }
+.site-header { margin: 0 0 28px; width: 100vw; margin-left: calc(50% - 50vw); padding: 0 var(--gutter); }
 .header-line { border-bottom: 1px solid color-mix(in srgb, var(--text) 12%, transparent); }
 .header-filled { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
 .header-sticky { position: sticky; top: 0; z-index: 20; background: var(--bg); }
@@ -1861,7 +1926,7 @@ hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--text) 15%, transp
 @media (max-width: 760px) {
   .nav-burger { display: flex; }
   .nav-links {
-    display: none; position: absolute; top: 100%; left: -20px; right: -20px; padding: 10px 20px 18px;
+    display: none; position: absolute; top: 100%; left: calc(-1 * var(--gutter)); right: calc(-1 * var(--gutter)); padding: 10px var(--gutter) 18px;
     background: var(--bg); border-bottom: 1px solid color-mix(in srgb, var(--text) 12%, transparent);
     flex-direction: column; align-items: stretch; gap: 8px; margin: 0;
   }
@@ -1871,7 +1936,7 @@ hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--text) 15%, transp
 }
 
 /* Footer */
-.site-footer { margin: 60px 0 0; width: 100vw; margin-left: calc(50% - 50vw); padding: 44px 20px 28px; font-size: .95rem; }
+.site-footer { margin: 60px 0 0; width: 100vw; margin-left: calc(50% - 50vw); padding: 44px var(--gutter) 28px; font-size: .95rem; }
 .footer-tint { background: color-mix(in srgb, var(--text) 5%, var(--bg)); }
 .footer-dark { background: #14181b; color: #e6e9e8; }
 .footer-dark a { color: #fff; }
@@ -1936,17 +2001,45 @@ hr { border: 0; border-top: 1px solid color-mix(in srgb, var(--text) 15%, transp
 .sec-pad-medium > .sec-inner { padding-top: 56px; padding-bottom: 56px; }
 .sec-pad-large > .sec-inner { padding-top: 104px; padding-bottom: 104px; }
 .sec[class*="sec-bg-"]:not(.sec-full):not(.sec-wide) { border-radius: var(--radius); }
-.sec[class*="sec-bg-"]:not(.sec-full):not(.sec-wide) > .sec-inner { padding-left: 28px; padding-right: 28px; }
+.sec[class*="sec-bg-"]:not(.sec-full):not(.sec-wide) > .sec-inner { padding-left: 11px; padding-right: 11px; }
 .sec > .sec-inner > .blk:first-child { margin-top: 0; }
 .sec > .sec-inner > .blk:last-child { margin-bottom: 0; }
 .sec + .sec, .sec { margin: 28px 0; }
 /* Breakouts: the background reaches the viewport edge while the
    content stays in the column. */
-.sec-wide { width: min(1080px, 100vw); margin-left: calc(50% - min(540px, 50vw)); }
+.sec-wide { width: min(1560px, 100vw); margin-left: calc(50% - min(780px, 50vw)); }
 .sec-full { width: 100vw; margin-left: calc(50% - 50vw); }
-.sec-wide > .sec-inner, .sec-full > .sec-inner { padding-left: 20px; padding-right: 20px; }
+.sec-wide > .sec-inner, .sec-full > .sec-inner { padding-left: var(--gutter); padding-right: var(--gutter); }
 .sec-full > .sec-inner > .blk, .sec-full > .sec-inner > .pb-html { max-width: var(--maxw); margin-left: auto; margin-right: auto; }
 .sec-full > .sec-inner > .blk.site-header, .sec-full > .sec-inner > .blk.site-footer, .sec-full > .sec-inner > .hero-cover { max-width: none; }
+/* A header or footer inside a design wrapper: the wrapper is the band
+   (full width, its colour), so the block gives up its own breakout,
+   gutters and background, and the sticky behaviour moves to the wrapper. */
+.sec > .sec-inner > .site-header, .sec > .sec-inner > .site-footer {
+  width: auto; margin-left: 0; margin-right: 0; padding-left: 0; padding-right: 0;
+}
+.sec[class*="sec-bg-"] > .sec-inner > .site-header,
+.sec[class*="sec-bg-"] > .sec-inner > .site-footer { background: transparent; border-bottom-color: transparent; }
+.sec > .sec-inner > .site-header { margin-bottom: 0; }
+.sec > .sec-inner > .site-footer { margin-top: 0; }
+.sec:has(> .sec-inner > .site-header) { margin-top: 0; }
+.sec:has(> .sec-inner > .site-footer) { margin-bottom: 0; }
+.sec:has(> .sec-inner > .header-sticky) { position: sticky; top: 0; z-index: 20; }
+/* The bar itself is the padding; a background alone should not make
+   the header twice as tall. An explicit padding choice still applies. */
+.sec[class*="sec-bg-"]:not([class*="sec-pad-"]):has(> .sec-inner > .site-header) > .sec-inner { padding-top: 0; padding-bottom: 0; }
+.sec[class*="sec-bg-"]:not([class*="sec-pad-"]):has(> .sec-inner > .site-footer) > .sec-inner { padding-top: 0; padding-bottom: 0; }
+/* Coloured bands: the nav and footer text read on the colour. */
+.sec-bg-primary .nav-links a:hover, .sec-bg-secondary .nav-links a:hover, .sec-bg-dark .nav-links a:hover, .sec-bg-image .nav-links a:hover { opacity: .8; color: inherit; }
+.sec-bg-primary .nav-cta, .sec-bg-secondary .nav-cta { background: #fff; color: var(--primary); border-color: #fff; }
+/* Nothing above the first band on the page. */
+.page > .sec:first-child, .page > .blk:first-child { margin-top: 0; }
+/* ...and nothing below the last one. The page's 80px bottom padding is
+   for a page that ends in content; a page that ends in a footer band
+   would show it as a white strip under the footer. */
+.page:has(> .site-footer:last-child),
+.page:has(> .sec:last-child > .sec-inner > .site-footer) { padding-bottom: 0; }
+.page > .site-footer:last-child, .page > .sec:last-child > .sec-inner > .site-footer { margin-bottom: 0; }
 /* Hidden per device */
 @media (max-width: 700px) { .sec-hide-mobile { display: none; } }
 @media (min-width: 701px) { .sec-hide-desktop { display: none; } }
@@ -1988,7 +2081,7 @@ blockquote cite { display: block; font-size: .9rem; font-style: normal; opacity:
    own. Every rule is scoped under .pb-html so pasted markup cannot
    restyle the rest of the page. */
 .pb-html { margin: 0 0 26px; }
-.pb-html-wide { max-width: min(1080px, 92vw); margin-inline: auto; }
+.pb-html-wide { max-width: min(1560px, 94vw); margin-inline: auto; }
 .pb-html-full { max-width: none; }
 
 /* HTML mode: the author's markup IS the page, so the column moves off
@@ -1998,9 +2091,9 @@ blockquote cite { display: block; font-size: .9rem; font-style: normal; opacity:
 .page-html { max-width: none; margin: 0; padding: 0 0 80px; }
 .page-html .pb-html { margin: 0; }
 .page-html .pb-html:not(.pb-html-wide):not(.pb-html-full) {
-  max-width: var(--maxw); margin-inline: auto; padding: 0 20px;
+  max-width: var(--maxw); margin-inline: auto; padding: 0 var(--gutter);
 }
-.page-html .pb-html-wide { padding: 0 20px; }
+.page-html .pb-html-wide { padding: 0 var(--gutter); }
 .page-html .pb-html-full { max-width: none; padding: 0; }
 .pb-html > *:last-child { margin-bottom: 0; }
 /* Embeds keep a 16:9 box and never overflow the column. */
@@ -2198,11 +2291,24 @@ def render_page(
     ctx = {"tenant_slug": tenant_slug, "forms": forms or {}, "needs_form_js": False}
 
     body_parts = []
+    rendered: list[dict] = []
     for block in blocks if isinstance(blocks, list) else []:
         renderer = RENDERERS.get(block.get("type"))
         if renderer:
             body_parts.append(_apply_design(block, renderer(block, ctx), ctx))
+            rendered.append(block)
 
+    # A footer at the end of the page is emitted *after* the content
+    # column rather than inside it, and the column is the flex child
+    # that takes the leftover height: that is what puts the footer on
+    # the bottom edge of the window on a page with one paragraph on it.
+    # Only <body>'s own children become flex items, so margins between
+    # the blocks inside the column keep collapsing exactly as before.
+    footer_html = ""
+    if rendered and rendered[-1].get("type") == "footer":
+        footer_html = body_parts.pop()
+
+    body_class = ' class="has-footer"' if footer_html else ""
     banner = '<div class="preview-banner">Draft preview — this is not the live page</div>' if preview else ""
     form_script = '<script src="/js/page-form.js" defer></script>' if ctx["needs_form_js"] else ""
     if ctx.get("needs_motion_js"):
@@ -2221,7 +2327,8 @@ def render_page(
         f"--primary:{theme['primary']};--secondary:{theme['secondary']};"
         f"--bg:{theme['background']};--text:{theme['text']};"
         f"--font:{FONT_STACKS[theme['font']]};--hfont:{FONT_STACKS[heading_font]};"
-        f"--radius:{RADII[theme['radius']]};--maxw:{MAX_WIDTHS[theme['max_width']]}"
+        f"--radius:{RADII[theme['radius']]};--maxw:{MAX_WIDTHS[theme['max_width']]};"
+        f"--gutter:{PAGE_GUTTER}"
     )
 
     return (
@@ -2232,9 +2339,10 @@ def render_page(
         f"{head_meta}"
         f"<style>:root{{{css_vars}}}{_PAGE_CSS}</style>\n"
         f"{form_script}"
-        "</head>\n<body>\n"
+        f'</head>\n<body{body_class}>\n'
         f"{banner}"
         f'<main class="{"page page-html" if mode == "html" else "page"}">'
         f'{"".join(body_parts)}</main>\n'
+        f"{footer_html}"
         "</body>\n</html>"
     )

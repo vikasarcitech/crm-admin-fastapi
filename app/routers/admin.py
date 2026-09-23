@@ -9,7 +9,7 @@ from urllib.parse import urlparse
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import Response
 
-from .. import db, events, tenancy, xlsx
+from .. import db, events, pagebuilder, tenancy, xlsx
 from ..schemas import SettingUpdate, UserCreate, UserRole, UserUpdate, WebhookCreate
 from ..security import (
     CurrentUser,
@@ -25,7 +25,10 @@ router = APIRouter(prefix="/api", tags=["admin"])
 # Roles that can create or grant other elevated roles.
 ELEVATED_ROLES = {UserRole.owner, UserRole.super_admin}
 
-SETTING_KEYS = {"notify_emails", "spam", "branding", "pipeline"}
+# site_chrome is the site-wide header and footer: two page-builder
+# blocks stored once and rendered around every page (app/pagebuilder.py,
+# with_site_chrome). It is validated as those blocks on write.
+SETTING_KEYS = {"notify_emails", "spam", "branding", "pipeline", "site_chrome"}
 # The platform's full event catalogue (app/events.py), so a webhook
 # can subscribe to publishes and build failures, not just leads.
 ALLOWED_EVENTS = events.PLATFORM_EVENTS
@@ -412,13 +415,20 @@ async def put_setting(
     if key not in SETTING_KEYS:
         raise HTTPException(400, "Unknown setting.")
 
+    value = payload.value
+    if key == "site_chrome":
+        # The header and footer are page blocks: same cleaner as a page
+        # save, so a bad link or an oversized field is refused here with
+        # the block validator's own message.
+        value = pagebuilder.clean_site_chrome(value)
+
     scoped = db.TenantDB(user.tenant_id)
     await scoped.execute(
         """INSERT INTO settings (tenant_id, key, value) VALUES ($1, $2, $3::jsonb)
            ON CONFLICT (tenant_id, key)
            DO UPDATE SET value = EXCLUDED.value, updated_at = now()""",
         key,
-        payload.value,  # jsonb codec encodes; a pre-dumped string double-encodes
+        value,  # jsonb codec encodes; a pre-dumped string double-encodes
     )
     await events.log_activity(
         user.tenant_id,

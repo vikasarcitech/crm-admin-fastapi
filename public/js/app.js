@@ -14,9 +14,7 @@
   const ROUTES = [
     { path: 'dashboard', label: 'Dashboard', view: 'dashboard', group: 'Overview',
       icon: 'M3 12h4l2 5 3-11 2 6h5' },
-    { path: 'insights', label: 'Analytics', view: 'insights', group: 'Overview',
-      perm: 'analytics.view',
-      icon: 'M4 20V10m5 10V4m5 16v-7m5 7V8' },
+    // Analytics is off the menu; the insights API and module stay.
 
     // The content-items and taxonomy screens are deliberately off the
     // menu: the page builder is the way this platform makes pages now.
@@ -38,16 +36,15 @@
     { path: 'seo', label: 'SEO', view: 'seo', group: 'Site',
       perm: 'seo.manage',
       icon: 'M11 4a7 7 0 100 14 7 7 0 000-14M20 20l-4-4' },
-    { path: 'site', label: 'Site settings', view: 'site', group: 'Site',
-      icon: 'M12 9a3 3 0 100 6 3 3 0 000-6M4 12h2m12 0h2M12 4v2m0 12v2' },
-    { path: 'publishing', label: 'Publishing', view: 'publishing', group: 'Site',
-      perm: 'deploy.trigger',
-      icon: 'M12 19V5m0 0l-5 5m5-5l5 5M5 21h14' },
+    // Site settings is off the menu; its API and module stay, and the
+    // site-wide header and footer are edited on the Pages screen.
+    // Publishing is off the menu with the other screens this admin no
+    // longer shows; the deploy API and its module stay in place.
 
     { path: 'users', label: 'Users', view: 'users', group: 'Admin',
       perm: 'users.view',
       icon: 'M4 19a5 5 0 0110 0M9 4a3 3 0 100 6 3 3 0 000-6' },
-    { path: 'account', label: 'Account & roles', view: 'account', group: 'Admin',
+    { path: 'account', label: 'Account', view: 'account', group: 'Admin',
       icon: 'M12 12a4 4 0 100-8 4 4 0 000 8M5 21a7 7 0 0114 0' },
     // Operations, Integrations, Raw webhooks, Activity and Lead settings
     // are off the menu with the lead-desk screens. Their APIs and
