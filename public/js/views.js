@@ -68,6 +68,16 @@
             h('div.panel-head', {}, [
               h('h2', { text: 'Lead volume' }),
               h('div.spacer'),
+              // Plain links: the export is a GET on the session cookie,
+              // so the browser downloads it like any file.
+              h('a.btn.btn-sm', {
+                href: `/api/dashboard/export?days=${days}&format=csv`, text: 'CSV',
+                title: 'Download lead volume as CSV',
+              }),
+              h('a.btn.btn-sm', {
+                href: `/api/dashboard/export?days=${days}&format=xlsx`, text: 'Excel',
+                title: 'Download lead volume as an Excel workbook',
+              }),
               select([[7, 'Last 7 days'], [30, 'Last 30 days'], [90, 'Last 90 days']], days,
                 (e) => ctx.navigate(`#/dashboard?days=${e.target.value}`)),
             ]),

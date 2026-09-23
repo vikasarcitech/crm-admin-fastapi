@@ -2,12 +2,14 @@
 
 import ipaddress
 import secrets
+from datetime import datetime, timezone
 from typing import Any
 from urllib.parse import urlparse
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi.responses import Response
 
-from .. import db, events, tenancy
+from .. import db, events, tenancy, xlsx
 from ..schemas import SettingUpdate, UserCreate, UserRole, UserUpdate, WebhookCreate
 from ..security import (
     CurrentUser,
@@ -30,23 +32,12 @@ ALLOWED_EVENTS = events.PLATFORM_EVENTS
 
 
 # ============================================================== dashboard
-@router.get("/dashboard")
-async def dashboard(
-    days: int = Query(default=30, ge=7, le=365),
-    scoped: db.TenantDB = Depends(tenant_db),
-) -> dict:
-    totals = await scoped.fetch_one(
-        """SELECT count(*)::int AS total,
-                  count(*) FILTER (WHERE created_at > now() - make_interval(days => $2))::int AS period,
-                  count(*) FILTER (WHERE created_at > now() - interval '24 hours')::int AS today,
-                  count(*) FILTER (WHERE status = 'new')::int AS unworked,
-                  count(*) FILTER (WHERE status = 'won')::int AS won,
-                  count(*) FILTER (WHERE status = 'lost')::int AS lost,
-                  coalesce(sum(value_amount) FILTER (WHERE status = 'won'), 0)::float8 AS won_value
-             FROM leads WHERE tenant_id = $1 AND NOT is_spam""",
-        days,
-    )
+async def _lead_volume(scoped: db.TenantDB, days: int) -> tuple[list, list]:
+    """Leads per day (every day in the window, zero-filled) and per source.
 
+    One query pair, used by the dashboard's chart and by the export
+    underneath it, so the file someone downloads is the chart they saw.
+    """
     by_day = await scoped.fetch(
         """SELECT to_char(d::date, 'YYYY-MM-DD') AS day, coalesce(c.n, 0)::int AS n
              FROM generate_series(
@@ -71,6 +62,27 @@ async def dashboard(
             GROUP BY 1 ORDER BY n DESC LIMIT 6""",
         days,
     )
+    return by_day, by_source
+
+
+@router.get("/dashboard")
+async def dashboard(
+    days: int = Query(default=30, ge=7, le=365),
+    scoped: db.TenantDB = Depends(tenant_db),
+) -> dict:
+    totals = await scoped.fetch_one(
+        """SELECT count(*)::int AS total,
+                  count(*) FILTER (WHERE created_at > now() - make_interval(days => $2))::int AS period,
+                  count(*) FILTER (WHERE created_at > now() - interval '24 hours')::int AS today,
+                  count(*) FILTER (WHERE status = 'new')::int AS unworked,
+                  count(*) FILTER (WHERE status = 'won')::int AS won,
+                  count(*) FILTER (WHERE status = 'lost')::int AS lost,
+                  coalesce(sum(value_amount) FILTER (WHERE status = 'won'), 0)::float8 AS won_value
+             FROM leads WHERE tenant_id = $1 AND NOT is_spam""",
+        days,
+    )
+
+    by_day, by_source = await _lead_volume(scoped, days)
 
     recent = await scoped.fetch(
         """SELECT id, full_name, company, status, created_at, utm_source
@@ -98,6 +110,52 @@ async def dashboard(
 
 
 # =============================================================== activity
+
+@router.get("/dashboard/export", include_in_schema=False)
+async def dashboard_export(
+    days: int = Query(default=30, ge=7, le=365),
+    format: str = Query(default="csv", pattern="^(csv|xlsx)$"),
+    scoped: db.TenantDB = Depends(tenant_db),
+) -> Response:
+    """The Lead volume chart as a file — CSV, or an Excel workbook.
+
+    Same numbers as the chart (same helper), plus the source breakdown:
+    one sheet per table in the workbook, the two tables one after the
+    other in the CSV. Cells go through the same formula-neutralising the
+    submissions export uses; a UTM source is visitor-supplied text.
+    """
+    by_day, by_source = await _lead_volume(scoped, days)
+    total = sum(row["n"] for row in by_source) or 1
+    stamp = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    filename = f"lead-volume-{days}d-{stamp}"
+
+    daily: list[list] = [["Day", "Leads"], *[[row["day"], row["n"]] for row in by_day]]
+    daily.append(["Total", sum(row["n"] for row in by_day)])
+    sources: list[list] = [["Source", "Leads", "Share"],
+                           *[[row["source"], row["n"], f"{round(row['n'] / total * 100)}%"] for row in by_source]]
+
+    if format == "xlsx":
+        body = xlsx.workbook([("Lead volume", daily), ("Sources", sources)])
+        return Response(
+            body,
+            media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+            headers={"content-disposition": f'attachment; filename="{filename}.xlsx"'},
+        )
+
+    def cell(value) -> str:
+        text = "" if value is None else str(value)
+        if text[:1] in ("=", "+", "-", "@", "\t", "\r"):
+            text = f"'{text}"
+        return '"' + text.replace('"', '""') + '"' if any(ch in text for ch in ',"\n') else text
+
+    lines = [",".join(cell(v) for v in row) for row in daily]
+    lines += ["", *(",".join(cell(v) for v in row) for row in sources)]
+    return Response(
+        "\ufeff" + "\r\n".join(lines) + "\r\n",     # BOM: Excel then reads UTF-8 correctly
+        media_type="text/csv; charset=utf-8",
+        headers={"content-disposition": f'attachment; filename="{filename}.csv"'},
+    )
+
 @router.get("/activity")
 async def activity(
     limit: int = Query(default=50, ge=10, le=200),
