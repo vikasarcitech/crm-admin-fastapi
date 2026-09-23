@@ -176,6 +176,14 @@ def _page_slug(value: str) -> str:
 class PageCreate(BaseModel):
     title: str = Field(min_length=1, max_length=160)
     slug: str = Field(min_length=1, max_length=80)
+    # Meta at creation, not only in page settings: the description and
+    # the SEO title are what a page needs before it is shared, and
+    # asking for them once is cheaper than remembering to go back.
+    description: str | None = Field(default=None, max_length=300)
+    seo: dict[str, Any] | None = None
+    # What the page starts as: the block starter, or a single HTML block
+    # for someone who is writing the markup themselves.
+    starter: str | None = Field(default=None, pattern="^(blocks|html)$")
 
     @field_validator("slug")
     @classmethod
@@ -193,11 +201,46 @@ class PageUpdate(BaseModel):
     description: str | None = Field(default=None, max_length=300)
     blocks: list[Any] | None = None
     theme: dict[str, Any] | None = None
+    seo: dict[str, Any] | None = None
 
     @field_validator("slug")
     @classmethod
     def check_slug(cls, value: str | None) -> str | None:
         return _page_slug(value) if value is not None else None
+
+
+class PageModeChange(BaseModel):
+    """Switch a page between the block builder and hand-written HTML.
+
+    ``html`` is the markup to start from, and it is how the builder's
+    whole-page source view saves: the author has the page's HTML in
+    front of them and has edited it, so converting must keep *their*
+    text rather than re-render the blocks and throw it away. Omitted,
+    the server renders the existing blocks as before.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    mode: str = Field(pattern="^(blocks|html)$")
+    html: str | None = Field(default=None, max_length=200_000)
+
+
+class PageHtmlCheck(BaseModel):
+    """A raw HTML fragment the block editor wants dry-run through the cleaner.
+
+    The cap here is deliberately looser than the block's own
+    ``MAX_HTML_CHARS``: an over-long paste should come back with the
+    cleaner's own "too large" message, not a schema error the editor
+    cannot explain.
+    """
+
+    model_config = ConfigDict(extra="forbid")
+
+    html: str = Field(default="", max_length=500_000)
+    # True when the editor is showing the whole page rather than one
+    # block: only there can the markup be a whole HTML document, so only
+    # there does the answer change.
+    whole_page: bool = False
 
 
 class IntakeMeta(BaseModel):

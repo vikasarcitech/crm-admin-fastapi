@@ -154,22 +154,91 @@ def _clean_form(b: dict) -> dict:
 # is escaped at render time, which is what makes stored XSS impossible
 # here — so this one is sanitized at *write* time instead, through the
 # same allow-list cleaner content_items.body uses (app/sanitize.py).
+# Unlike the other callers it keeps <style> blocks and inline styles:
+# a page written as HTML has to be able to look like something.
 # Sanitizing on write means a later change to this renderer cannot
 # start emitting something unsafe that was stored earlier.
-MAX_HTML_CHARS = 60_000
+# Raised from 60k with the allow-list: a page written entirely as HTML
+# now legitimately carries its own <style> block, a form, and inline
+# data: images, and 60k was small enough that a real page hit it.
+MAX_HTML_CHARS = 150_000
+# A whole document carries its own CSS and scripts inline, so it is a
+# different size of thing from a fragment.
+MAX_DOCUMENT_CHARS = 500_000
+
+# A document, not a fragment: it *starts* with the doctype or <html>.
+# Anchored on purpose — a fragment that merely mentions "<html" in its
+# text is a fragment, and the difference decides whether the markup is
+# served byte-for-byte or run through the allow-list.
+_DOCUMENT_START = re.compile(r"(?is)\A\s*(?:<!doctype\s+html|<html[\s>])")
 
 
-def _clean_html(b: dict) -> dict:
+def is_document(markup: str | None) -> bool:
+    """True when this markup is a whole HTML document."""
+    return bool(markup) and bool(_DOCUMENT_START.match(str(markup)))
+
+
+# A pasted page brings its <head> with it. Everything in there is
+# dropped by the allow-list except <title>, which is legal in a body and
+# would quietly become a second document title — so the head's title
+# goes before the cleaner runs. Scoped to a real <head>, so the <title>
+# that gives an inline SVG its accessible name is untouched.
+_DOC_HEAD = re.compile(r"(?is)<head\b[^>]*>.*?</head>")
+_DOC_TITLE = re.compile(r"(?is)<title\b[^>]*>.*?</title>")
+
+
+def prepare_block_html(raw: str | None, *, allow_document: bool = False) -> tuple[str, bool]:
+    """Markup for an HTML block, and whether it is a whole document.
+
+    A document is stored **verbatim** — `<html>` to `</html>`, head,
+    scripts and all — because that is the point of it: the page is that
+    file, and a sanitizer that rewrote it would be answering a question
+    nobody asked. Nothing else on the platform does this, and it takes
+    the `pages.raw_html` permission, which no role below owner has by
+    default: a page is served from the same origin as this API, so a
+    script on one runs with the session of whoever opens it.
+
+    Everything else — every fragment, every block on a normal page —
+    goes through the allow-list exactly as before.
+    """
+    text = str(raw or "")
+    if allow_document and is_document(text):
+        if len(text) > MAX_DOCUMENT_CHARS:
+            raise HTTPException(
+                400, f"This document is too large (limit {MAX_DOCUMENT_CHARS:,} characters)."
+            )
+        return text.strip(), True
+    return clean_block_html(text), False
+
+
+def clean_block_html(raw: str | None) -> str:
+    """Clean markup for an HTML block — the only way page markup is cleaned.
+
+    The block validator, the editor's live dry run and the blocks → HTML
+    conversion all come through here, so what the editor promises, what
+    the switch stores and what the save writes cannot disagree. They did:
+    the dry run ran without ``allow_stylesheet`` and told authors their
+    <style> block was about to be deleted when the save was keeping it.
+    """
     from .sanitize import clean_html  # noqa: PLC0415 — sanitize imports config
 
-    raw = b.get("html")
+    text = _DOC_HEAD.sub(lambda m: _DOC_TITLE.sub("", m.group(0)), str(raw or ""))
     try:
-        cleaned = clean_html(raw, limit=MAX_HTML_CHARS)
+        # A page's HTML block may carry a <style> block: it is the one
+        # place where the fragment is meant to be the whole page.
+        cleaned = clean_html(text, limit=MAX_HTML_CHARS, allow_stylesheet=True)
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
+    return (cleaned or "").strip()
 
+
+def _clean_html(b: dict, *, allow_document: bool = False) -> dict:
+    markup, document = prepare_block_html(b.get("html"), allow_document=allow_document)
     return {
-        "html": cleaned or "",
+        "html": markup,
+        # Sticky, and checked at render time: a block that says `doc` is
+        # served as the page rather than wrapped in it.
+        "doc": document,
         # Whether to apply the page's own typography to the markup.
         # Off is the right default for a pasted embed or a third-party
         # widget that ships its own styling.
@@ -201,8 +270,13 @@ CLEANERS: dict[str, Callable[[dict], dict]] = {
 }
 
 
-def clean_blocks(raw: Any) -> list[dict]:
-    """Validate a client-supplied block list into canonical stored form."""
+def clean_blocks(raw: Any, *, allow_document: bool = False) -> list[dict]:
+    """Validate a client-supplied block list into canonical stored form.
+
+    ``allow_document`` lets a *single* HTML block be a whole document
+    (see :func:`prepare_block_html`). Single on purpose: a document is
+    the page, so there is nothing for a second block to be.
+    """
     if not isinstance(raw, list):
         raise HTTPException(400, "Blocks must be a list.")
     if len(raw) > MAX_BLOCKS:
@@ -212,6 +286,15 @@ def clean_blocks(raw: Any) -> list[dict]:
     for block in raw:
         if not isinstance(block, dict):
             raise HTTPException(400, "Each block must be an object.")
+        # The html cleaner is the only one that takes an argument, and
+        # it is spelled out here rather than threaded through every
+        # other cleaner's signature for one caller.
+        if block.get("type") == "html":
+            cleaned.append({
+                "type": "html",
+                **_clean_html(block, allow_document=allow_document and len(raw) == 1),
+            })
+            continue
         cleaner = CLEANERS.get(block.get("type"))
         if cleaner is None:
             raise HTTPException(400, "That block type is not supported.")
@@ -232,6 +315,22 @@ def clean_theme(raw: Any) -> dict:
     if source.get("max_width") in MAX_WIDTHS:
         theme["max_width"] = source["max_width"]
     return theme
+
+
+def clean_page_seo(raw: Any) -> dict:
+    """Validate a page's SEO block.
+
+    Reuses the content module's cleaner so a page's meta behaves exactly
+    like a content item's — same keys, same limits, same canonical-URL
+    and og_type checks. `meta_description` is dropped on the way through:
+    a page's description is its own column (published alongside the
+    blocks), and a second copy in here could disagree with it.
+    """
+    from .content import clean_seo  # noqa: PLC0415 — content imports db
+
+    seo = clean_seo(raw)
+    seo.pop("meta_description", None)
+    return seo
 
 
 # -------------------------------------------------------------- rendering
@@ -482,7 +581,10 @@ def _render_html(b: dict, ctx: dict) -> str:
 
 
 def _render_spacer(b: dict, ctx: dict) -> str:
-    return f'<div style="height:{SPACER_SIZES[b["size"]]}"></div>'
+    # A class rather than an inline style: `style` is the one attribute
+    # the sanitizer always drops, so a spacer written this way is the
+    # only kind that survives a page being converted to HTML mode.
+    return f'<div class="pb-space-{b["size"]}"></div>'
 
 
 def _render_divider(b: dict, ctx: dict) -> str:
@@ -502,6 +604,64 @@ RENDERERS: dict[str, Callable[[dict, dict], str]] = {
     "spacer": _render_spacer,
     "divider": _render_divider,
 }
+
+# Blocks that cannot survive the trip to HTML mode. Only the form block
+# qualifies, and no longer because of the sanitizer — <form> and its
+# controls are on the allow-list now, so the markup would come through
+# intact. What would not come through is the JavaScript that posts it:
+# the page only ships the lead-form script when a form *block* rendered
+# it. Converting would leave a form that looks right and submits
+# nowhere, which is worse than dropping it and saying so.
+UNCONVERTIBLE_BLOCKS = {"form"}
+
+
+def page_document(blocks: Any) -> str | None:
+    """The whole document this page *is*, or None if it is a normal page.
+
+    Only ever a lone HTML block that was stored as a document: that is
+    the shape clean_blocks allows one to be saved in, and checking it
+    again here means a block list assembled some other way cannot make
+    the renderer hand back raw markup.
+    """
+    if not isinstance(blocks, list) or len(blocks) != 1:
+        return None
+    block = blocks[0]
+    if not isinstance(block, dict) or block.get("type") != "html" or not block.get("doc"):
+        return None
+    markup = block.get("html") or ""
+    return markup if is_document(markup) else None
+
+
+def blocks_to_html(blocks: list[dict], *, tenant_slug: str = "") -> tuple[str, list[str]]:
+    """Render a block list to a markup fragment, and say what was left out.
+
+    This is how a page switches from the builder to HTML mode without
+    the author losing what they already laid out: the same renderers
+    produce the same markup, and the page's own CSS classes come with
+    it, so a converted page looks like it did before.
+    """
+    ctx = {"tenant_slug": tenant_slug, "forms": {}, "needs_form_js": False}
+    parts: list[str] = []
+    skipped: list[str] = []
+
+    for block in blocks if isinstance(blocks, list) else []:
+        kind = block.get("type")
+        if kind in UNCONVERTIBLE_BLOCKS:
+            skipped.append(kind)
+            continue
+        if kind == "html":
+            # Already markup — taking the renderer's wrapper too would
+            # nest a .pb-html inside the one the page is about to be.
+            parts.append(block.get("html") or "")
+            continue
+        renderer = RENDERERS.get(kind)
+        if renderer is None:
+            skipped.append(str(kind))
+            continue
+        parts.append(renderer(block, ctx))
+
+    return "\n".join(part for part in parts if part), sorted(set(skipped))
+
 
 _PAGE_CSS = """
 * { box-sizing: border-box; }
@@ -570,6 +730,9 @@ blockquote cite { display: block; font-size: .9rem; font-style: normal; opacity:
 .lead-form .hp { position: absolute; left: -9999px; width: 1px; height: 1px; opacity: 0; }
 .form-error { color: #b3261e; font-size: .95rem; }
 .form-done { padding: 18px; border-radius: 8px; background: color-mix(in srgb, var(--primary) 12%, transparent); font-weight: 600; }
+.pb-space-small { height: 20px; }
+.pb-space-medium { height: 48px; }
+.pb-space-large { height: 96px; }
 .preview-banner {
   position: sticky; top: 0; z-index: 10; text-align: center;
   background: #a8791f; color: #fff; font-size: 13px; padding: 6px 10px;
@@ -582,10 +745,28 @@ blockquote cite { display: block; font-size: .9rem; font-style: normal; opacity:
 .pb-html { margin: 0 0 26px; }
 .pb-html-wide { max-width: min(1080px, 92vw); margin-inline: auto; }
 .pb-html-full { max-width: none; }
+
+/* HTML mode: the author's markup IS the page, so the column moves off
+   the wrapper and onto the block. That is also what makes "full bleed"
+   actually reach the edges — nested inside .page's max-width it never
+   could. */
+.page-html { max-width: none; margin: 0; padding: 0 0 80px; }
+.page-html .pb-html { margin: 0; }
+.page-html .pb-html:not(.pb-html-wide):not(.pb-html-full) {
+  max-width: var(--maxw); margin-inline: auto; padding: 0 20px;
+}
+.page-html .pb-html-wide { padding: 0 20px; }
+.page-html .pb-html-full { max-width: none; padding: 0; }
 .pb-html > *:last-child { margin-bottom: 0; }
 /* Embeds keep a 16:9 box and never overflow the column. */
 .pb-html iframe { width: 100%; max-width: 100%; aspect-ratio: 16 / 9; height: auto; border: 0; }
 .pb-html img { max-width: 100%; height: auto; }
+/* Anything that carries its own intrinsic size is held to the column,
+   so a pasted <marquee>, <canvas> or <textarea> cannot make the page
+   scroll sideways on a phone. */
+.pb-html marquee { display: block; max-width: 100%; }
+.pb-html :is(canvas, svg, video, textarea, table, pre, math) { max-width: 100%; }
+.pb-html marquee img { max-width: none; }
 .pb-html-styled h1, .pb-html-styled h2, .pb-html-styled h3,
 .pb-html-styled h4, .pb-html-styled h5, .pb-html-styled h6 {
   line-height: 1.25; margin: 1.6em 0 .5em; font-weight: 600;
@@ -632,7 +813,113 @@ blockquote cite { display: block; font-size: .9rem; font-style: normal; opacity:
   border: 0; margin: 1.6em 0;
   border-top: 1px solid color-mix(in srgb, var(--text) 15%, transparent);
 }
+/* Form controls. A browser's defaults are a system font at 13px, which
+   next to the page's 17px prose reads as a bug rather than a choice —
+   so the controls inherit type, colour and radius like every other
+   block does. Hand-written HTML is still free to override all of it:
+   these are single-class selectors, and an author's own rule or style
+   attribute outranks them. */
+.pb-html-styled fieldset {
+  margin: 0 0 1em; padding: 14px 16px; border-radius: 6px;
+  border: 1px solid color-mix(in srgb, var(--text) 15%, transparent);
+}
+.pb-html-styled legend { padding: 0 6px; font-weight: 600; }
+.pb-html-styled label { display: inline-block; margin-bottom: .35em; }
+.pb-html-styled :is(input, select, textarea, button) { font: inherit; color: inherit; }
+.pb-html-styled :is(input, select, textarea) {
+  display: block; width: 100%; max-width: 440px; margin: 0 0 1em;
+  padding: 10px 12px; border-radius: 6px; background: var(--bg);
+  border: 1px solid color-mix(in srgb, var(--text) 22%, transparent);
+}
+.pb-html-styled textarea { min-height: 7em; resize: vertical; }
+.pb-html-styled select[multiple], .pb-html-styled select[size] { padding: 6px; }
+/* Checkboxes and radios sit *in* their label line, so the block
+   treatment above would break every consent line ever written. */
+.pb-html-styled input:is([type="checkbox"], [type="radio"]) {
+  display: inline-block; width: auto; margin: 0 .5em 0 0; padding: 0;
+  vertical-align: baseline; accent-color: var(--primary);
+}
+.pb-html-styled input:is([type="submit"], [type="button"], [type="reset"], [type="color"]),
+.pb-html-styled button {
+  display: inline-block; width: auto; margin: 0 .4em 1em 0;
+  padding: 11px 20px; border: 0; border-radius: 6px; cursor: pointer;
+  background: var(--primary); color: #fff; font-weight: 600;
+}
+.pb-html-styled input:is([type="checkbox"], [type="radio"], [type="file"], [type="range"]) {
+  background: none;
+}
+.pb-html-styled :is(input, select, textarea, button):disabled { opacity: .6; cursor: not-allowed; }
+.pb-html-styled :is(input, select, textarea, button):focus-visible {
+  outline: 2px solid var(--primary); outline-offset: 2px;
+}
 """
+
+
+# ------------------------------------------------------------------- head
+def _meta(name: str, content: str | None, *, prop: bool = False) -> str:
+    """One meta tag, or nothing when there is no value to put in it."""
+    if not content:
+        return ""
+    attribute = "property" if prop else "name"
+    return f'<meta {attribute}="{name}" content="{_esc(content)}">\n'
+
+
+def _render_head(
+    *,
+    title: str,
+    description: str | None,
+    seo: dict,
+    page_url: str | None,
+    image_url: str | None,
+    preview: bool,
+) -> str:
+    """The document head's meta tags.
+
+    Values fall back the way an author expects rather than repeating
+    themselves: an empty og:title uses the SEO title, then the page
+    title; an empty og:description uses the meta description. A tag with
+    nothing behind it is left out entirely — an empty `content=""` is
+    worse than no tag, because a crawler reads it as an answer.
+    """
+    meta_title = seo.get("meta_title") or title
+    og_title = seo.get("og_title") or meta_title
+    og_description = seo.get("og_description") or description
+    twitter_title = seo.get("twitter_title") or og_title
+    twitter_description = seo.get("twitter_description") or og_description
+    # A card with an image but no card type would render as a thumbnail
+    # strip; large_image is what a page with an og:image wants.
+    twitter_card = seo.get("twitter_card") or ("summary_large_image" if image_url else "summary")
+
+    # A draft preview is never indexable, whatever the page's own flags
+    # say. Otherwise the flags are only worth a tag when one is set:
+    # "index, follow" is the default and states nothing.
+    if preview:
+        robots = "noindex, nofollow"
+    else:
+        robots = ", ".join(
+            ("noindex" if seo.get("noindex") else "index",
+             "nofollow" if seo.get("nofollow") else "follow"),
+        ) if (seo.get("noindex") or seo.get("nofollow")) else ""
+
+    canonical = seo.get("canonical") or (page_url if not preview else None)
+
+    parts = [
+        f"<title>{_esc(meta_title)}</title>\n",
+        _meta("description", description),
+        _meta("robots", robots),
+        f'<link rel="canonical" href="{_esc(canonical)}">\n' if canonical else "",
+        _meta("og:title", og_title, prop=True),
+        _meta("og:description", og_description, prop=True),
+        _meta("og:type", seo.get("og_type") or "website", prop=True),
+        _meta("og:url", page_url, prop=True),
+        _meta("og:image", image_url, prop=True),
+        _meta("og:image:alt", seo.get("og_image_alt") if image_url else None, prop=True),
+        _meta("twitter:card", twitter_card),
+        _meta("twitter:title", twitter_title),
+        _meta("twitter:description", twitter_description),
+        _meta("twitter:image", image_url),
+    ]
+    return "".join(parts)
 
 
 def render_page(
@@ -643,9 +930,25 @@ def render_page(
     theme: dict,
     tenant_slug: str,
     forms: dict[str, list] | None = None,
+    seo: dict | None = None,
+    page_url: str | None = None,
+    image_url: str | None = None,
+    mode: str = "blocks",
     preview: bool = False,
 ) -> str:
-    """Render a full HTML document. `forms` maps form slug -> field list."""
+    """Render a full HTML document.
+
+    `forms` maps form slug -> field list. `seo` is the cleaned SEO block;
+    `page_url` and `image_url` are absolute URLs the caller resolved
+    (the site's origin and a media id are both outside this module), and
+    the og:url / og:image tags are simply omitted without them rather
+    than emitted as paths a crawler cannot follow.
+
+    `mode` only changes the wrapper. An HTML page is still a block list
+    (one html block), so publish, revisions and sanitize-on-write are
+    the same code either way — it just is not wrapped in the builder's
+    fixed content column, because the author's markup is the page.
+    """
     theme = clean_theme(theme)
     ctx = {"tenant_slug": tenant_slug, "forms": forms or {}, "needs_form_js": False}
 
@@ -655,12 +958,16 @@ def render_page(
         if renderer:
             body_parts.append(renderer(block, ctx))
 
-    meta_description = (
-        f'<meta name="description" content="{_esc(description)}">' if description else ""
-    )
     banner = '<div class="preview-banner">Draft preview — this is not the live page</div>' if preview else ""
     form_script = '<script src="/js/page-form.js" defer></script>' if ctx["needs_form_js"] else ""
-    robots = '<meta name="robots" content="noindex, nofollow">' if preview else ""
+    head_meta = _render_head(
+        title=title,
+        description=description,
+        seo=seo or {},
+        page_url=page_url,
+        image_url=image_url,
+        preview=preview,
+    )
 
     css_vars = (
         f"--primary:{theme['primary']};--bg:{theme['background']};--text:{theme['text']};"
@@ -672,12 +979,12 @@ def render_page(
         '<html lang="en">\n<head>\n'
         '<meta charset="utf-8">\n'
         '<meta name="viewport" content="width=device-width, initial-scale=1">\n'
-        f"{robots}{meta_description}"
-        f"<title>{_esc(title)}</title>\n"
+        f"{head_meta}"
         f"<style>:root{{{css_vars}}}{_PAGE_CSS}</style>\n"
         f"{form_script}"
         "</head>\n<body>\n"
         f"{banner}"
-        f'<main class="page">{"".join(body_parts)}</main>\n'
+        f'<main class="{"page page-html" if mode == "html" else "page"}">'
+        f'{"".join(body_parts)}</main>\n'
         "</body>\n</html>"
     )

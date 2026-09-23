@@ -90,7 +90,7 @@ docs are at `/api/docs` in development and disabled in production.
 | **Compliance** | Consent logging with policy version and evidence, cookie-consent config, data-subject export (JSON across six tables) and erasure (anonymize or delete), per-scope retention policies with a preview and a worker that enforces them |
 | Attribution | Landing page, referrer and the full UTM set captured at submission, first-touch persisted per session |
 | Outbound | Webhook endpoints with HMAC-SHA256 signing, idempotency keys, exponential backoff, delivery log — subscribable to publishes and build failures, not just leads |
-| Page builder | The original block builder is still here: typed JSON blocks (hero, rich text, image, features, quote, lead form, sanitized raw HTML, …), markdown-subset formatting, per-page theme, draft → publish with revisions, served at `/p/{tenant}/{slug}` |
+| Page builder | The original block builder is still here: typed JSON blocks (hero, rich text, image, features, quote, lead form, …), markdown-subset formatting, per-page theme, per-page meta/Open Graph tags, draft → publish with revisions, served at `/p/{tenant}/{slug}` |
 | Sign-up | Self-service registration at `/register` — creates a fresh workspace with the registrant as owner, a starter contact form, the built-in content types, default menus and email templates (`ALLOW_SIGNUPS=0` for invite-only installs) |
 | Email | Queued outbound email (`email_outbox` + worker, retries with backoff) through a provider-agnostic sender — SES SMTP in production, log provider in dev. Powers lead notifications, autoresponders, campaigns, subscriber confirmations and password reset at `/forgot` → `/reset` |
 
@@ -574,17 +574,208 @@ markup, so it is sanitized on **write** instead — through the same `nh3`
 allow-list `content_items.body` uses (`sanitize.py`), then emitted verbatim by
 the only renderer in the file that does not escape. Sanitizing on write rather
 than on read is deliberate: a later change to that renderer cannot start
-emitting something unsafe that was already stored. Structure, links, lists,
-tables, images and figures survive; scripts, event handlers, inline styles and
-`javascript:` URLs do not, and an `iframe` is kept only if its host is in
-`EMBED_ALLOWED_HOSTS`. The block is capped at 60,000 characters, and its
+emitting something unsafe that was already stored.
+
+The tag list is **everything HTML has except what executes or re-points the
+document**. Kept: the sectioning elements, prose, links, lists, tables (with
+their legacy `border`/`cellpadding`/`align`/`bgcolor` attributes, because
+pasted markup is full of them), images, figures, `map`/`area`, `canvas`,
+`meter`/`progress`/`dialog`/`details`/`data`, inline SVG (drawing elements
+only — no `<script>`, `<foreignObject>`, `<use>`, `<image>` or the
+`<animate>` family, each of which is a way for a graphic to reach outside
+itself), MathML (minus `<annotation-xml>`, `<mglyph>` and `<malignmark>`,
+which exist to change how the parser reads what follows them), the **form
+controls** (`form`, `label`, `input`, `select`, `option`, `optgroup`,
+`datalist`, `textarea`, `fieldset`, `legend`, `output`, `button`), the
+**deprecated presentational tags** browsers still render (`marquee`, `center`,
+`font`, `big`, `strike`, `tt`, `nobr`, `acronym`), and `role` plus the
+`aria-*` and `data-*` attribute prefixes, without which an accessible page
+quietly loses the half that mattered.
+
+Removed, and this is the whole list: `<script>`, `<object>`, `<embed>`,
+`<applet>`, `<param>`, `<base>`, `<link>`, `<meta>`, `<frame>`/`<frameset>`,
+`<template>` and `<noscript>` (the last two smuggle unparsed markup past the
+cleaner), every `on*` handler, `javascript:` URLs, and `srcdoc`. An `iframe`
+is kept only if its host is in `EMBED_ALLOWED_HOSTS`. A `data:` URL survives
+only as a non-SVG inline image — `image/svg+xml` can carry script, and a
+`data:` URL is the one place it would arrive unparsed. Every URL attribute is
+scheme-checked by **name** rather than by tag (`href`, `src`, `srcset`,
+`action`, `formaction`, `poster`, `cite`, `ping`), so a tag added to the list
+later cannot arrive with an unchecked URL on it.
+
+Form controls are safe here for the same reason a `<div>` is: no handler
+attribute is on the allow-list and `script-src` names no origin but ours, so
+nothing in the fragment can run. What a hand-written `<form>` *can* do is
+post: its `action` must be https or one of your own paths, the page CSP's
+`form-action` is `'self' https:` to match, and it posts wherever the author
+pointed it. A submission that should reach your `leads` still belongs in a
+lead-form block, which is wired to the API — the editor's rules panel says so
+next to the pane. **CSS is kept**, because a page you write yourself has
+to be able to look like something: `style` attributes everywhere, and
+`<style>` blocks in a page's HTML block (`allow_stylesheet`, off for content
+items and email templates, where a page-wide stylesheet pasted into one
+fragment reaches further than its author meant). That is a deliberate
+re-reading of the old "style is dropped" rule, not a hole in it: CSS cannot
+run script in any engine this platform supports — `expression()` died with IE
+and `-moz-binding` with old Gecko — so the risk it actually carries is remote
+fetching, and that is what `clean_css` takes out. An inline style is rebuilt
+declaration by declaration; a stylesheet is scanned (braces, parens and quotes
+tracked) so selectors, media queries and nesting survive byte-for-byte while
+individual bad declarations are dropped. Out go `@import`, the legacy
+execution constructs, and any `url()` that is not https, one of your own
+paths, or an inline `data:image`. `font-src` gained `https:` so an
+`@font-face` can actually load; `style-src` still names no host, so a remote
+stylesheet stays impossible. The block is capped at 150,000 characters, and its
 `styled` flag chooses whether the page's own typography applies (off is right
 for a third-party widget that ships its own CSS). Every rule is scoped under
 `.pb-html`, so pasted markup cannot restyle the rest of the page.
 
+#### A page that is a whole HTML document
+
+Everything above describes a *fragment*: markup that the platform wraps in its
+own document, with its own `<head>`, and cleans against an allow-list. A page
+can also be the document itself. If an HTML page's markup starts with
+`<!doctype html>` or `<html>`, it is stored **byte-for-byte** and served
+byte-for-byte — the author's `<head>`, their `<meta>` and `<title>`, their CDN
+`<link>`s, their `<script>`s. Nothing is removed, nothing is injected, and the
+platform's own head (SEO tags, canonical, Open Graph) is *not* added, because
+the document brings its own.
+
+This is the one place on the platform where stored markup is not sanitized, so
+it is gated three ways:
+
+- **A permission.** `pages.raw_html` (Settings → Roles → Site) — held by owner
+  and super_admin, and by no other role until an owner grants it. An admin
+  without it who pastes a document gets the fragment cleaner and a panel that
+  says so, rather than a silent difference between what they pasted and what
+  the page serves.
+- **A shape.** Only an HTML-mode page with exactly one block can be a document
+  — a document *is* the page, so there is nothing for a second block to be —
+  and the check is re-run at render time (`page_document()`), so a block list
+  assembled any other way cannot make the renderer hand back raw markup.
+  Switching such a page back to blocks re-cleans it into a fragment.
+- **A sandbox where it matters.** The live page carries a permissive CSP
+  (`script-src 'self' https: 'unsafe-inline' 'unsafe-eval'`, https only, no
+  plugins, `frame-ancestors 'none'`) — it has to, or the document would not
+  work. The **preview** adds `sandbox` without `allow-same-origin`: the editor
+  frames the draft on the admin's own origin, and that one directive is what
+  stops an author's script from reading the session cookie or calling this API
+  as whoever is editing the page. The live page has no sandbox, which is the
+  honest cost of the feature: a public page shares an origin with `/api`, so a
+  script on one runs with the session of an admin who opens it. Serving public
+  pages from their own hostname removes that; until then, `pages.raw_html` is
+  the control.
+
+Because the preview is sandboxed, a document page's preview reloads on save
+instead of following each keystroke — the editor says so, and hides the
+typography and width selects, which have nothing to apply to.
+
+A page can also be written **entirely** as HTML. `pages.mode` is `blocks` or
+`html`; in HTML mode the builder drops the block list and gives the whole left
+half of the screen to the source, the preview keeps the other half, and what
+you type is the page — write `<h1>heading</h1>`, it renders; add `<p>para</p>`
+below it, that renders below it. Under the hood an HTML page is still one
+`html` block, so publish, revisions, the SEO head and sanitize-on-write are
+the same code in both modes; `mode` only decides the wrapper. The block
+builder's fixed content column moves off the page and onto the block
+(`.page-html`), which is also what finally makes a full-bleed block reach the
+edges — nested inside `.page`'s `max-width` it never could. **Edit as HTML**
+in the page header converts what is already there by running the existing
+blocks through the same renderers, so an author starts from their current page
+rather than a blank one, and the page's own CSS classes come with it so it
+still looks the same. A lead form is the one block that cannot convert — its markup
+would survive the cleaner, but the script that posts it ships only when a form
+*block* rendered it, and a form that looks right and submits nowhere is worse
+than no form — so it is dropped and named in the response. Switching back keeps the markup as a single HTML block. Two
+supporting changes made the round trip honest: the sanitizer now allows the
+inert sectioning tags a hand-written page is built from (`header`, `footer`,
+`main`, `article`, `aside`, `nav`, `hgroup`, `address`), and the spacer block
+renders a class instead of an inline `style`, which was the one piece of our
+own output the cleaner would have thrown away.
+
+Because HTML is the one place where what you type is not what gets stored, it
+gets a real editor — and it lives in the builder, in an **HTML** section under
+Blocks (or as the whole screen in HTML mode), not in a drawer.
+
+That section opens on the **whole page**, not on a block: `GET /api/pages/{id}/html`
+runs the draft through the same renderers the preview and the live page use
+and hands back the **document a browser would receive** — `<!doctype html>`
+to `</html>`, the head with its title, meta and theme CSS, then every block —
+so "what is the HTML of this page" is answered by reading it rather than by
+converting the page to find out. **Copy HTML** takes it elsewhere; editing it
+and pressing **Save as page HTML** stores exactly that text as the page
+(`POST /mode` carries the markup; because it starts with `<!doctype html>` it
+is stored as a whole document, see below, and served byte-for-byte). In HTML
+mode the same document is one click away — **Show full document** loads it
+into the editor in place of the fragment. The picker beside the heading narrows the
+section to a single HTML block when there is one, which is the in-place editing
+described below; the live preview follows either way — a block edit replaces
+its own `.pb-html`, a whole-page edit replaces the preview's content column. Markup is written by looking at what it
+renders, so it stays open beside the preview while blocks are added, reordered
+or deleted around it; every other block type still edits in a drawer, because
+a handful of labelled fields does not need the room. The editor has line
+numbers, Tab/Shift+Tab indenting, Enter that steps in after an opening tag, an
+**Insert…** menu of ready-made markup grouped as Text / Media / Interactive
+(one control rather than a row of a dozen buttons, and named for what lands on
+the page — "Dropdown", not `<select>`), and a Tidy pass that re-indents
+(leaving `<pre>`/`<textarea>` alone, whose whitespace is content). Beside the
+code sits a live verdict from `POST /api/pages/html/check` — *All good — this
+saves exactly as you wrote it*, or *Dropped when you save: &lt;script&gt;,
+onclick*, with **Fix it for me** to take the cleaned markup and a fold-away
+view of it. Under that, one line of standing rules and four exceptions
+(scripts, embeds, forms, CSS), folded away in the narrow column: the general
+case should not cost the same room as the answer about the markup in hand.
+
+The dry run is the block validator's own `clean_block_html()`, not a second
+call with its own arguments — it used to be one, and it ran without
+`allow_stylesheet`, so the editor told authors their `<style>` block was being
+deleted while the save was quietly keeping it. Blocks → HTML conversion goes
+through the same function for the same reason (it was dropping the `<style>`
+of an HTML block it converted). That function is also where a pasted *whole
+document* is made to behave: `<html>`, `<head>` and `<body>` unwrap on their
+own, but a `<head>`'s `<title>` is legal in a body and would become a second
+document title, so it is removed first — scoped to a real `<head>`, leaving
+the `<title>` that names an inline SVG alone.
+
+The preview follows as you type — no save, no reload. The check request is
+already happening on every pause, so its answer is pushed straight into the
+preview document, which is this app's own page on this origin and therefore
+reachable: the nth `.pb-html` is replaced in place, and the typography and
+width selects repaint the wrapper's classes the same way. What goes in is
+always the *cleaned* markup the server just returned, never the raw textarea,
+so nothing unvetted is ever written into a same-origin document — paste a
+`<script>` and the preview simply never shows it. Because the screen can now
+show markup the draft does not have, the save button carries a marker that
+reads **Unsaved — the preview is showing your edit** until **Save to draft**
+writes it, and an unsaved edit is re-applied if the preview reloads under it. A page with several HTML
+blocks gets a picker in the section header, and switching between them keeps
+unsaved text; clicking an HTML row in the block list jumps to it. A page can
+also *start* as HTML: **New page → Start with → HTML** creates it in HTML mode
+and lands straight in its editor, rather than leaving someone to delete a hero
+they never wanted.
+
+Each page carries its own head. The meta description and SEO title are asked
+for in the **New page** form rather than only in settings, because a page that
+reaches publish without them lets Google choose both; page settings then holds
+the rest — canonical URL, `noindex`/`nofollow`, and the Open Graph and Twitter
+overrides. Storage reuses `content_items.seo`'s exact shape and validator
+(`clean_seo`, so the same limits and the same "canonical must be https or a
+path" check apply), minus `meta_description`: that is the page's own
+`description` column, and a second copy could disagree with it. Tags fall back
+instead of repeating themselves — an empty og:title uses the SEO title, then
+the page title; an empty og:description uses the meta description — and a tag
+with nothing behind it is omitted rather than emitted as `content=""`, which a
+crawler reads as an answer. `og:url` and `og:image` need an absolute origin, so
+they appear only when `APP_BASE_URL` is set; an `og_image_id` is resolved
+against the media library at render time, and the image's own alt text fills in
+`og:image:alt`. A draft preview is always `noindex, nofollow`, whatever the
+page's flags say.
+
 Editing writes the draft columns only; the public URL serves a snapshot taken
 at publish, and each publish records a revision (newest 20 kept) that can be
-restored into the draft. A `form` block renders one of the tenant's intake
+restored into the draft. Meta travels with both: the publish snapshot
+carries `published_seo`, and a restored revision brings back the description
+and SEO block that shipped with it rather than keeping today's. A `form` block renders one of the tenant's intake
 forms inline — `page-form.js` posts it to the same intake endpoint with the
 usual honeypot, fill-time and first-touch attribution handling. Published
 pages get their own strict CSP and a 60-second public cache TTL. It is built
@@ -629,10 +820,13 @@ also the one place an XSS could enter. Everything goes through
 
 - `<iframe>` survives only when its `src` host is on `EMBED_ALLOWED_HOSTS`;
   a frame whose src is rejected is removed rather than left as a blank box.
-- `style` is dropped entirely — layout is the frontend's job.
+- `style` is cleaned declaration by declaration rather than dropped; a
+  `<style>` block is kept only where the caller asks for it
+  (`allow_stylesheet`), which is a page's HTML block and nowhere else.
 - `rel` stays author-controlled (SEO needs `nofollow` and `sponsored`) but is
   filtered to a token allow-list.
-- `javascript:` and `data:` URLs are refused by the scheme allow-list.
+- `javascript:` URLs are refused by the scheme allow-list, and a `data:` URL
+  survives only as a non-SVG inline image.
 
 Sanitizing on write, not on read, means a later template change cannot start
 emitting raw stored HTML.

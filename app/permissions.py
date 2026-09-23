@@ -43,7 +43,13 @@ PERMISSIONS: dict[str, tuple[str, ...]] = {
     "Marketing": (
         "marketing.view", "marketing.manage", "campaigns.send", "subscribers.manage",
     ),
-    "Site": ("menus.manage", "blocks.manage", "settings.manage"),
+    # pages.raw_html is the one permission that is *not* about reach
+    # inside the CMS: it decides who may store a page as a whole HTML
+    # document, scripts and all, which is served byte-for-byte. Public
+    # pages share an origin with this API, so a page author's script
+    # runs with the session of any admin who opens the page. Owners
+    # have it; an admin does not, until an owner grants it here.
+    "Site": ("menus.manage", "blocks.manage", "settings.manage", "pages.raw_html"),
     "People": ("users.view", "users.manage", "roles.manage"),
     "Analytics": ("analytics.view", "analytics.manage"),
     "Publishing": ("deploy.trigger", "deploy.manage", "apikeys.manage", "webhooks.manage"),
@@ -93,13 +99,14 @@ _EDITOR = frozenset(
     }
 )
 
-# Everything a single site can be administered with — no cross-site reach.
-_SITE_ADMIN = ALL_PERMISSIONS - {"sites.manage", "roles.manage"}
+# Everything a single site can be administered with — no cross-site reach,
+# and not raw HTML documents: that one is an owner's call to delegate.
+_SITE_ADMIN = ALL_PERMISSIONS - {"sites.manage", "roles.manage", "pages.raw_html"}
 
 DEFAULTS: dict[str, frozenset[str]] = {
     # Cross-site operator: the only role that manages tenants.
     "super_admin": ALL_PERMISSIONS,
-    "owner": frozenset(_SITE_ADMIN | {"roles.manage"}),
+    "owner": frozenset(_SITE_ADMIN | {"roles.manage", "pages.raw_html"}),
     "admin": _SITE_ADMIN,
     "editor": _EDITOR,
     "author": frozenset(

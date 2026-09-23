@@ -409,6 +409,19 @@ select { appearance: none; padding-right: 26px;
 }
 .drawer-head h2 { font-size: 17px; }
 .drawer-body { flex: 1; overflow-y: auto; padding: 16px 18px 32px; }
+/* Group label inside a long drawer (page settings runs Page → Search →
+   Social → Theme, which is too much to read as one flat list). */
+.drawer-section {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: .05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  padding-bottom: 5px;
+  margin: 18px 0 10px;
+  border-bottom: 1px solid var(--line);
+}
+.drawer-body > .drawer-section:first-child { margin-top: 0; }
 .drawer .panel + .panel { margin-top: 14px; }
 .icon-btn {
   background: none; border: 0; cursor: pointer; color: var(--muted);
@@ -524,10 +537,13 @@ dl.meta dd.mono { font-family: var(--mono); font-size: 12px; }
 /* ------------------------------------------------------ page builder */
 .pb-editor {
   display: grid;
-  grid-template-columns: 330px minmax(0, 1fr);
+  grid-template-columns: minmax(0, 460px) minmax(0, 1fr);
   gap: 16px;
   align-items: start;
 }
+/* An HTML page has no block list, so source and preview split evenly. */
+.pb-editor.is-html { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+.pb-editor.is-html .pb-code-panel { margin-top: 0; }
 .pb-preview iframe {
   width: 100%;
   height: calc(100vh - 190px);
@@ -579,6 +595,14 @@ dl.meta dd.mono { font-family: var(--mono); font-size: 12px; }
   cursor: pointer;
 }
 .md-btn:hover { background: var(--line-soft); }
+select.md-btn {
+  padding-right: 24px;
+  cursor: pointer;
+  /* A select is 13px system font by default, which next to the 12px
+     buttons reads as a stray field rather than part of the bar. */
+  font: 12px/1 var(--sans);
+  height: auto;
+}
 .md-btn.md-b { font-weight: 700; }
 .md-btn.md-i { font-style: italic; }
 .md-btn.md-s { text-decoration: line-through; }
@@ -961,8 +985,9 @@ ul.plain { margin: 0; padding-left: 18px; font-size: 13px; }
 .media-icon.is-working { color: var(--brass); }
 .media-icon.is-failed { color: var(--danger); }
 
-/* Raw-HTML block editor. Monospace and no wrapping-by-word, because
-   this is markup being read for structure, not prose. */
+/* ------------------------------------------- raw-HTML block editor */
+/* Monospace and no wrapping-by-word, because this is markup being read
+   for structure, not prose. */
 textarea.pb-code {
   font-family: var(--mono);
   font-size: 12.5px;
@@ -971,4 +996,117 @@ textarea.pb-code {
   white-space: pre;
   overflow-wrap: normal;
   overflow-x: auto;
+}
+
+/* Two columns: the code, and what the sanitizer will do to it. In the
+   builder's side column there is only room for one, so they stack. */
+.pb-html-editor {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 300px;
+  gap: 14px;
+  align-items: start;
+}
+.pb-code-panel .pb-html-editor { grid-template-columns: minmax(0, 1fr); }
+.pb-code-pane { min-width: 0; }
+
+/* The code section under Blocks. The side column widens to hold it —
+   markup in a 330px column is unreadable — and narrows again when the
+   page has no HTML block. */
+.pb-code-panel { margin-top: 14px; }
+.pb-code-panel .panel-head select { max-width: 140px; }
+.pb-code-opts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 10px;
+  margin: 12px 0;
+}
+.pb-code-opts .field { margin-bottom: 0; }
+.pb-code-panel .row-actions { flex-wrap: wrap; }
+.pb-code-panel .md-hint { margin: 0; }
+/* Saved / unsaved marker beside the save button: with a live preview
+   the screen no longer tells you on its own whether the draft has the
+   markup you are looking at. */
+.pb-dirty { font-size: 12px; }
+.pb-dirty[data-state='saved'] { color: var(--muted); }
+.pb-dirty[data-state='unsaved'] { color: var(--brass); font-weight: 500; }
+.pb-rules { margin-top: 2px; font-size: 12.5px; }
+.pb-rules summary { cursor: pointer; color: var(--accent); }
+.pb-rules .notice { margin: 8px 0 0; }
+.pb-rule-lede { margin: 0; }
+/* Four short rules, each scannable by its first word. */
+.pb-rule-list { margin: 8px 0 0; padding-left: 16px; }
+.pb-rule-list li { margin-bottom: 5px; }
+.pb-rule-list li:last-child { margin-bottom: 0; }
+/* The way past all four rules, set apart from them. */
+.pb-rule-doc {
+  margin: 9px 0 0;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+}
+
+/* The gutter is plain text kept in sync by the editor, not a second
+   editable surface; it scrolls with the textarea and never wraps. */
+.pb-code-wrap {
+  display: flex;
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  overflow: hidden;
+}
+.pb-gutter {
+  flex: 0 0 auto;
+  padding: 7px 8px 7px 10px;
+  font: 12.5px/1.55 var(--mono);
+  color: #9aa5a2;
+  text-align: right;
+  background: var(--line-soft);
+  border-right: 1px solid var(--line);
+  overflow: hidden;
+  user-select: none;
+}
+.pb-gutter span { display: block; }
+.pb-code-wrap textarea.pb-code {
+  flex: 1 1 auto;
+  min-width: 0;
+  /* Must match the gutter's vertical padding, or line 1 and the number
+     "1" sit on different rows. */
+  padding: 7px 10px;
+  border: 0;
+  border-radius: 0;
+  resize: vertical;
+}
+.pb-code-wrap textarea.pb-code:focus { outline-offset: -2px; }
+
+.pb-side-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--muted);
+  margin-bottom: 5px;
+}
+/* Live verdict from /api/pages/html/check. */
+.pb-check {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-left-width: 3px;
+  border-radius: var(--radius);
+  background: var(--surface);
+  font-size: 12.5px;
+  margin-bottom: 12px;
+}
+.pb-check p { margin: 0; }
+.pb-check[data-state='idle'] { color: var(--muted); }
+.pb-check[data-state='ok'] { border-left-color: var(--s-won); }
+.pb-check[data-state='warn'] { border-left-color: var(--brass); background: #fdfaf2; }
+.pb-check[data-state='error'] { border-left-color: var(--danger); background: #fdf5f3; }
+.pb-check .btn { margin-top: 9px; }
+.pb-check-detail { margin-top: 8px; }
+.pb-check-detail summary { cursor: pointer; color: var(--accent); }
+.pb-check-detail textarea.pb-code {
+  margin: 8px 0;
+  background: var(--canvas);
+  min-height: 0;
+}
+
+@media (max-width: 1100px) {
+  .pb-html-editor { grid-template-columns: 1fr; }
 }

@@ -882,6 +882,24 @@ CREATE TABLE IF NOT EXISTS retention_policies (
   PRIMARY KEY (tenant_id, scope)
 );
 
+-- --------------------------------------------------- page SEO columns
+-- db/schema.sql declares these inline for a fresh install; these are the
+-- same columns for a database that predates them. The page builder's
+-- head is otherwise limited to a title and a description, which is not
+-- enough to publish a page anyone can share.
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS seo JSONB NOT NULL DEFAULT '{}'::jsonb;
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS published_seo JSONB;
+ALTER TABLE page_revisions ADD COLUMN IF NOT EXISTS description TEXT;
+ALTER TABLE page_revisions ADD COLUMN IF NOT EXISTS seo JSONB NOT NULL DEFAULT '{}'::jsonb;
+
+-- A page is either the block builder or one hand-written HTML document.
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'blocks';
+ALTER TABLE pages ADD COLUMN IF NOT EXISTS published_mode TEXT;
+ALTER TABLE page_revisions ADD COLUMN IF NOT EXISTS mode TEXT NOT NULL DEFAULT 'blocks';
+DO $$ BEGIN
+  ALTER TABLE pages ADD CONSTRAINT pages_mode_check CHECK (mode IN ('blocks', 'html'));
+EXCEPTION WHEN duplicate_object THEN NULL; END $$;
+
 -- ---------------------------------------------------- updated_at hooks
 DO $$
 DECLARE t TEXT;

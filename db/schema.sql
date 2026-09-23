@@ -260,6 +260,16 @@ CREATE TABLE IF NOT EXISTS pages (
   description   TEXT,                                   -- meta description
   blocks        JSONB  NOT NULL DEFAULT '[]'::jsonb,    -- draft content
   theme         JSONB  NOT NULL DEFAULT '{}'::jsonb,
+  -- The rest of the head: meta_title, canonical, noindex/nofollow,
+  -- og_* and twitter_*. Same shape and same validator as
+  -- content_items.seo (app/content.py clean_seo), minus
+  -- meta_description — that is the `description` column above, and two
+  -- copies of it could disagree.
+  seo           JSONB  NOT NULL DEFAULT '{}'::jsonb,
+  -- 'blocks': the block builder. 'html': the page IS one HTML document
+  -- the author writes, stored as a single html block so that publish,
+  -- revisions and sanitize-on-write all work unchanged.
+  mode          TEXT   NOT NULL DEFAULT 'blocks' CHECK (mode IN ('blocks', 'html')),
   status        page_status NOT NULL DEFAULT 'draft',
 
   -- snapshot served at /p/{tenant}/{slug}
@@ -267,6 +277,8 @@ CREATE TABLE IF NOT EXISTS pages (
   published_description TEXT,
   published_blocks      JSONB,
   published_theme       JSONB,
+  published_seo         JSONB,
+  published_mode        TEXT,
   published_at          TIMESTAMPTZ,
 
   updated_by    BIGINT REFERENCES users(id) ON DELETE SET NULL,
@@ -284,6 +296,11 @@ CREATE TABLE IF NOT EXISTS page_revisions (
   title      TEXT  NOT NULL,
   blocks     JSONB NOT NULL,
   theme      JSONB NOT NULL,
+  -- Meta travels with the revision: restoring last week's page and
+  -- keeping this week's canonical tag would be a silent SEO change.
+  description TEXT,
+  seo        JSONB NOT NULL DEFAULT '{}'::jsonb,
+  mode       TEXT  NOT NULL DEFAULT 'blocks',
   created_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
