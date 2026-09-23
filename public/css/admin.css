@@ -1198,3 +1198,25 @@ textarea.pb-code {
 .pb-side-switch .pb-side-label { margin: 0; }
 .pb-side-switch select { max-width: 180px; }
 .pb-side-body .pb-code-panel { margin-top: 0; }
+
+/* The code pane scrolls inside itself. Its height is tied to the
+   viewport, not to the number of lines, so a long document never makes
+   the whole admin page scroll — and overscroll-behavior stops the wheel
+   from "falling through" to the page when the pane hits its end. */
+.pb-code-wrap { max-height: calc(100vh - 300px); min-height: 280px; }
+.pb-code-wrap textarea.pb-code {
+  height: calc(100vh - 300px);
+  min-height: 280px;
+  overflow: auto;
+  overscroll-behavior: contain;
+}
+.pb-gutter { overscroll-behavior: contain; }
+/* An HTML page gives the code the whole column, like the preview. */
+.pb-editor.is-html .pb-code-wrap,
+.pb-editor.is-html .pb-code-wrap textarea.pb-code { height: calc(100vh - 360px); max-height: none; }
+/* The read-only "what saving keeps" view stays short; it is a peek, not an editor. */
+.pb-check-detail textarea.pb-code { height: auto; min-height: 0; max-height: 240px; }
+@media (max-width: 900px) {
+  .pb-code-wrap, .pb-code-wrap textarea.pb-code,
+  .pb-editor.is-html .pb-code-wrap, .pb-editor.is-html .pb-code-wrap textarea.pb-code { height: 50vh; max-height: none; }
+}
