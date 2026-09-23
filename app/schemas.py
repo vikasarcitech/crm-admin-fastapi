@@ -8,6 +8,7 @@ body produces a 422 instead of reaching SQL.
 from __future__ import annotations
 
 import re
+import unicodedata
 from datetime import date, datetime
 from decimal import Decimal
 from enum import Enum
@@ -167,7 +168,19 @@ PAGE_SLUG_RE = re.compile(r"^[a-z0-9]+(?:-[a-z0-9]+)*$")
 
 
 def _page_slug(value: str) -> str:
-    cleaned = value.strip().lower()
+    """Normalise a slug the way the editor does, then insist on the result.
+
+    Spaces, underscores and case are corrected rather than rejected —
+    "About Us" is obviously "about-us", and a client that did not run
+    the editor's slugify should not be told off for it. Only what cannot
+    be fixed (nothing left after folding, e.g. an all-emoji title) is an
+    error, and the message says what to do.
+    """
+    folded = unicodedata.normalize("NFKD", value)
+    folded = "".join(ch for ch in folded if not unicodedata.combining(ch))
+    cleaned = re.sub(r"[^a-z0-9]+", "-", folded.lower()).strip("-")[:80]
+    if not cleaned:
+        raise ValueError("needs at least one letter or number")
     if not PAGE_SLUG_RE.match(cleaned):
         raise ValueError("must be lowercase letters, numbers and dashes")
     return cleaned

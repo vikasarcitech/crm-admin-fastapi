@@ -562,6 +562,52 @@ HTML. `pagebuilder.py` cleans every block against a per-type field spec on
 write (scheme-checked links, hex-only colours) and escapes every value again
 at render time, so page authors cannot introduce stored XSS.
 
+#### The block library
+
+Thirty block types, grouped in the palette the way an author thinks about a
+page rather than the way the markup is spelled:
+
+| Group | Blocks |
+|---|---|
+| **Layout** | Columns (2–4, each with image / heading / text / button), Image + text (side by side, image left or right, half or third split), Spacer, Divider |
+| **Content** | Hero (eyebrow, two buttons, optional cover photo, normal / tall / full-screen), Heading (with eyebrow and subheading), Rich text, Button (solid / outline / secondary / text link, two sizes), Quote, Table (`|`-separated rows), FAQ / Accordion, Steps |
+| **Media** | Image (size, alignment, link), Gallery (2–5 columns, crop, spacing, click to open), Video (paste a YouTube or Vimeo link; the embed URL is *built*, never passed through), Map (an address; Google Maps embed) |
+| **Marketing** | Feature grid (icons, links, cards / plain / icon circles), Call to action (four styles, centred or split), Pricing table (plans with feature lists, badge, highlighted plan), Testimonials (grid / swipe carousel / single, stars, avatars), Stats, Logo strip, Team, Announcement bar, Lead form |
+| **Site** | Header / navigation (logo, links, button, sticky; the mobile menu is a checkbox toggle — no script), Footer (brand, link columns, social links, copyright), Contact details (with optional map), Social links, HTML |
+
+Repeating items — plans, people, images, questions — are edited as a list of
+small cards in the drawer, each with its own fields and move/remove controls;
+the DOM is kept across reorders so nothing typed is lost. Every image field
+has a **Browse** button that opens the media library as a picker. Every block
+can be **duplicated** from its row.
+
+#### The design layer
+
+Every block drawer ends with a folded **Design** panel, and it is what turns a
+list of content blocks into a designed page. Background (light tint, primary,
+secondary, dark, a custom colour, or an image with a darkening overlay), text
+colour, vertical padding, width (**content**, **wide**, or **full bleed** —
+the background reaches the viewport edge while the content stays in the
+column), scroll-in animation (fade / rise; honours `prefers-reduced-motion`,
+and the CSS only hides a section once `page-motion.js` has run, so a blocked
+script means a visible page, not an empty one), visibility per device, an
+anchor id for `#links`, and an extra CSS class for a page's own `<style>`.
+
+It is one wrapper, applied in one place (`_apply_design`), around whatever the
+block renderer produced: renderers stay about content, the wrapper stays about
+presentation, and a block with no design settings renders exactly as it did
+before the layer existed (`clean_design()` returns `None` for all-default
+settings, so nothing is stored either). Colours are hex-validated and emitted
+as CSS custom properties in a `style` attribute — the page CSP already allows
+inline styles, and a validated hex literal is the whole of what can appear in
+one.
+
+The theme gained a **secondary colour** (badges, eyebrows, stars, one button
+style), a **heading typeface** separate from the body (six system stacks —
+still no web font, because the page CSP names no stylesheet host), and a
+**corner radius** (sharp / soft / round) that buttons, cards, images and inputs
+all read from `--radius`.
+
 Text supports a markdown subset rendered escape-first on the server:
 `**bold**`, `*italic*`, `~~strike~~`, `` `code` ``, `[label](url)` (scheme
 allow-listed; a `javascript:` link renders as its label), plus in rich-text

@@ -44,6 +44,11 @@
   }
 
   // =============================================================== forms
+  // Every active form has a page of its own at /f/{site}/{form}: the
+  // form rendered by the same code a page's Lead form block uses, so
+  // "view the form" means seeing exactly what a visitor gets.
+  const formUrl = (ctx, f) => `/f/${ctx.session.user.tenantSlug}/${f.slug}`;
+
   function formsPane(ctx, data) {
     return h('div.stack', {}, [
       panel(null, table([
@@ -64,6 +69,9 @@
         {
           label: '',
           cell: (f) => h('div.row-actions', {}, [
+            f.is_active
+              ? h('a.btn.btn-sm', { href: formUrl(ctx, f), target: '_blank', rel: 'noopener', text: 'View' })
+              : null,
             actionButton('Edit', () => editForm(ctx, data, f), { small: true }),
             actionButton('Submissions', () => openSubmissions(ctx, f), { small: true }),
             confirmButton('Delete', async () => {
@@ -75,8 +83,10 @@
         },
       ], data.forms, { empty: 'No forms yet.' })),
       panelBody(h('p.muted', {
-        text: 'Static frontends POST to /api/public/{site}/forms/{form}. Add the origin to '
-          + 'PUBLIC_FORM_ORIGINS or the browser will block the request.',
+        text: 'View opens the form on its own page — share that link, or add the form '
+          + 'to any built page with a Lead form block. Static frontends POST to '
+          + '/api/public/{site}/forms/{form}; add the origin to PUBLIC_FORM_ORIGINS '
+          + 'or the browser will block the request.',
       })),
     ]);
   }
@@ -89,7 +99,6 @@
     const mapping = detail?.lead_mapping || {};
     const rules = (detail?.notification_rules || []).map((r) => ({ ...r }));
     const auto = detail?.autoresponder || {};
-    const templates = (await api.get('/api/templates')).templates;
 
     const fieldHost = h('div.field-builder');
 
@@ -170,22 +179,22 @@
     const notifyInput = textInput('notify_emails', (detail?.notify_emails || []).join(', '));
     const successInput = textarea('success_message', settings.success_message, { rows: 2 });
     const redirectInput = textInput('redirect_url', settings.redirect_url);
-    const honeypotBox = checkbox('honeypot', settings.honeypot !== false, 'Honeypot field');
-    const captchaSelect = select([['none', 'None'], ['turnstile', 'Cloudflare Turnstile'],
-      ['recaptcha', 'reCAPTCHA']], settings.captcha || 'turnstile', null);
-    const minFill = h('input', { type: 'number', value: settings.min_fill_ms ?? 2500 });
-    const storeBox = checkbox('store', settings.store_submission !== false,
-      'Keep the raw submission log');
-    const consentBox = checkbox('consent_required', settings.consent_required,
-      'Require every consent checkbox to be ticked');
-    const autoBox = checkbox('auto_enabled', auto.enabled, 'Send an autoresponder');
-    const autoSelect = select([['', '— choose a template —'],
-      ...templates.filter((t) => t.is_active).map((t) => [t.slug, t.name])],
-    auto.template_slug || '', null);
+    // Spam protection, storage/consent, the autoresponder, lead mapping
+    // and notification rules are no longer edited here. Their stored
+    // values are carried through untouched on save, and a new form gets
+    // the defaults the old controls used to pre-select — so nothing
+    // about how a form behaves changed when the controls went away.
+    const carried = {
+      honeypot: settings.honeypot !== false,
+      captcha: settings.captcha || 'turnstile',
+      min_fill_ms: settings.min_fill_ms ?? 2500,
+      store_submission: settings.store_submission !== false,
+      consent_required: Boolean(settings.consent_required),
+    };
 
     formDrawer({
       title: isNew ? 'New form' : detail.name,
-      subtitle: isNew ? null : `POST to ${detail.endpoint}`,
+      subtitle: isNew ? null : `View at ${formUrl(ctx, detail)} · POST to ${detail.endpoint}`,
       fields: [
         { name: 'name', label: 'Name', control: nameInput },
         { label: 'Fields', control: h('div', {}, [
@@ -198,22 +207,6 @@
         { name: 'success_message', label: 'Success message', control: successInput },
         { name: 'redirect_url', label: 'Redirect after submit', control: redirectInput,
           help: 'Optional. A path or https:// URL.' },
-        { label: 'Spam protection', control: h('div.stack', {}, [
-          honeypotBox,
-          h('label.field', {}, [h('span', { text: 'Captcha' }), captchaSelect]),
-          h('label.field', {}, [
-            h('span', { text: 'Minimum fill time (ms)' }), minFill,
-            h('small.muted', { text: '0 turns the timing check off. 2500 is a good default.' }),
-          ]),
-        ]) },
-        { label: 'Storage & consent', control: h('div.stack', {}, [storeBox, consentBox]) },
-        { label: 'Autoresponder', control: h('div.stack', {}, [
-          autoBox,
-          autoSelect,
-          h('small.muted', {
-            text: 'Sent to the address the submitter gave, using the chosen template.',
-          }),
-        ]) },
       ],
       onSave: async (values) => {
         if (!fields.length) throw new Error('Add at least one field.');
@@ -226,20 +219,12 @@
           settings: {
             success_message: values.success_message || null,
             redirect_url: values.redirect_url || null,
-            honeypot: honeypotBox.querySelector('input').checked,
-            captcha: captchaSelect.value,
-            min_fill_ms: Number(minFill.value) || 0,
-            store_submission: storeBox.querySelector('input').checked,
-            consent_required: consentBox.querySelector('input').checked,
+            ...carried,
           },
         };
-        const autoEnabled = autoBox.querySelector('input').checked;
-        body.autoresponder = autoEnabled
-          ? { enabled: true, template_slug: autoSelect.value }
+        body.autoresponder = auto.enabled && auto.template_slug
+          ? { enabled: true, template_slug: auto.template_slug }
           : { enabled: false };
-        if (autoEnabled && !autoSelect.value) {
-          throw new Error('Choose a template for the autoresponder.');
-        }
 
         if (isNew) {
           const created = await api.post('/api/forms',
@@ -254,18 +239,9 @@
         toast('Saved.');
         ctx.reload();
       },
-      extra: isNew ? null : h('div.stack', {}, [
-        h('hr'),
-        h('h3', { text: 'Lead mapping' }),
-        h('p.muted', {
-          text: 'Fields already named full_name / email / phone / company / message fill the '
-            + 'lead automatically. Map anything else here.',
-        }),
-        mappingEditor(detail, fields, data.coreFields, ctx),
-        h('hr'),
-        h('h3', { text: 'Notification rules' }),
-        rulesEditor(detail, rules, fields, ctx),
-      ]),
+      // Lead mapping and notification rules editors (mappingEditor,
+      // rulesEditor below) are kept but no longer shown.
+      extra: null,
     });
   }
 

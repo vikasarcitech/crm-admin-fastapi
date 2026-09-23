@@ -498,76 +498,320 @@
   }
 
   // ------------------------------------------------------- block library
+  /**
+   * Field spec: [key, label, kind, options, coerce].
+   *   text · textarea (options = rows) · rich · select ([[value, label]])
+   *   formselect · toggle · check · number ([min, max]) · image
+   *   list ({ label, fields, max }) — a repeater of items, each with
+   *   its own fields from the same spec language.
+   * `group` places the block in the palette; `summary` is the one line
+   * the block list shows for it.
+   */
+  const IMG = 'image';
+  const ALIGN_LC = [['left', 'Left'], ['center', 'Centred']];
+  const ALIGN_CL = [['center', 'Centred'], ['left', 'Left']];
+  const COLS = (min, max, def) => ['columns', 'Columns', 'select',
+    Array.from({ length: max - min + 1 }, (_, i) => [min + i, String(min + i)]), Number];
+  const HEADING = ['heading', 'Heading (optional)', 'text'];
+  const SUB = ['sub', 'Subheading (optional)', 'textarea', 2];
+  const items = (n) => `${n} item${n === 1 ? '' : 's'}`;
+
   const BLOCKS = {
+    // ----------------------------------------------------------- Content
     hero: {
-      label: 'Hero',
-      make: () => ({ type: 'hero', heading: 'Your headline', sub: '', button_label: '', button_href: '', align: 'center' }),
+      label: 'Hero', group: 'Content',
+      make: () => ({ type: 'hero', heading: 'Your headline', sub: '', button_label: '', button_href: '', align: 'center', size: 'normal' }),
       summary: (b) => b.heading,
       fields: [
+        ['eyebrow', 'Eyebrow (small line above)', 'text'],
         ['heading', 'Heading', 'text'],
-        ['sub', 'Subheading', 'textarea'],
-        ['button_label', 'Button label (optional)', 'text'],
+        ['sub', 'Subheading', 'textarea', 3],
+        ['button_label', 'Button label', 'text'],
         ['button_href', 'Button link', 'text'],
-        ['align', 'Alignment', 'select', [['center', 'Centred'], ['left', 'Left']]],
+        ['button2_label', 'Second button label', 'text'],
+        ['button2_href', 'Second button link', 'text'],
+        [IMG, 'Background image (makes a full-width cover)', 'image'],
+        ['size', 'Height', 'select', [['normal', 'Normal'], ['tall', 'Tall'], ['screen', 'Full screen']]],
+        ['align', 'Alignment', 'select', ALIGN_CL],
       ],
     },
     heading: {
-      label: 'Heading',
-      make: () => ({ type: 'heading', text: 'Section heading', level: 2 }),
+      label: 'Heading', group: 'Content',
+      make: () => ({ type: 'heading', text: 'Section heading', level: 2, align: 'left' }),
       summary: (b) => b.text,
       fields: [
+        ['eyebrow', 'Eyebrow (small line above)', 'text'],
         ['text', 'Text', 'text'],
+        ['sub', 'Subheading (optional)', 'textarea', 2],
         ['level', 'Size', 'select', [[2, 'Large'], [3, 'Medium'], [4, 'Small']], Number],
+        ['align', 'Alignment', 'select', ALIGN_LC],
       ],
     },
     text: {
-      label: 'Rich text',
+      label: 'Rich text', group: 'Content',
       make: () => ({ type: 'text', body: 'Write something…' }),
       summary: (b) => (b.body || '').slice(0, 60),
       fields: [['body', 'Content', 'rich']],
     },
     image: {
-      label: 'Image',
-      make: () => ({ type: 'image', src: '', alt: '', caption: '' }),
+      label: 'Image', group: 'Media',
+      make: () => ({ type: 'image', src: '', alt: '', caption: '', width: 'full', align: 'center' }),
       summary: (b) => b.src || 'no image yet',
       fields: [
-        ['src', 'Image URL (https)', 'text'],
+        ['src', 'Image', 'image'],
         ['alt', 'Alt text', 'text'],
+        ['caption', 'Caption (optional)', 'text'],
+        ['href', 'Link (optional)', 'text'],
+        ['width', 'Size', 'select', [['full', 'Full width'], ['medium', 'Medium'], ['small', 'Small']]],
+        ['align', 'Alignment', 'select', [['center', 'Centred'], ['left', 'Left'], ['right', 'Right']]],
+      ],
+    },
+    gallery: {
+      label: 'Gallery', group: 'Media',
+      make: () => ({ type: 'gallery', heading: '', columns: 3, ratio: 'square', gap: 'small', lightbox: true, items: [] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING,
+        ['items', 'Images', 'list', {
+          label: 'Image', max: 24,
+          fields: [['src', 'Image', 'image'], ['alt', 'Alt text', 'text'], ['caption', 'Caption', 'text'], ['href', 'Link (optional)', 'text']],
+        }],
+        COLS(2, 5, 3),
+        ['ratio', 'Crop', 'select', [['square', 'Square'], ['landscape', 'Landscape'], ['portrait', 'Portrait'], ['natural', 'As uploaded']]],
+        ['gap', 'Spacing', 'select', [['none', 'None'], ['small', 'Small'], ['medium', 'Medium']]],
+        ['lightbox', 'Open the full image in a new tab when clicked', 'check'],
+      ],
+    },
+    video: {
+      label: 'Video', group: 'Media',
+      make: () => ({ type: 'video', url: '', caption: '', ratio: '16:9', width: 'full' }),
+      summary: (b) => b.url || 'paste a YouTube or Vimeo link',
+      fields: [
+        ['url', 'YouTube or Vimeo link', 'text'],
+        ['caption', 'Caption (optional)', 'text'],
+        ['ratio', 'Shape', 'select', [['16:9', 'Widescreen 16:9'], ['4:3', 'Classic 4:3'], ['1:1', 'Square'], ['9:16', 'Vertical']]],
+        ['width', 'Size', 'select', [['full', 'Full width'], ['medium', 'Medium']]],
+      ],
+    },
+    map: {
+      label: 'Map', group: 'Media',
+      make: () => ({ type: 'map', address: '', zoom: 15, height: 'medium' }),
+      summary: (b) => b.address || 'enter an address',
+      fields: [
+        ['address', 'Address or place', 'text'],
+        ['zoom', 'Zoom (3–20)', 'number', [3, 20]],
+        ['height', 'Height', 'select', [['short', 'Short'], ['medium', 'Medium'], ['tall', 'Tall']]],
         ['caption', 'Caption (optional)', 'text'],
       ],
     },
     button: {
-      label: 'Button',
-      make: () => ({ type: 'button', label: 'Learn more', href: '#', align: 'center', variant: 'solid' }),
+      label: 'Button', group: 'Content',
+      make: () => ({ type: 'button', label: 'Learn more', href: '#', align: 'center', variant: 'solid', size: 'normal' }),
       summary: (b) => b.label,
       fields: [
         ['label', 'Label', 'text'],
         ['href', 'Link', 'text'],
-        ['align', 'Alignment', 'select', [['center', 'Centred'], ['left', 'Left']]],
-        ['variant', 'Style', 'select', [['solid', 'Solid'], ['outline', 'Outline']]],
-      ],
-    },
-    features: {
-      label: 'Feature grid',
-      make: () => ({
-        type: 'features',
-        heading: 'Why choose us',
-        items: [{ title: 'Fast', body: 'Describe a benefit.' }, { title: 'Reliable', body: 'Describe another.' }],
-      }),
-      summary: (b) => `${(b.items || []).length} item(s)`,
-      fields: [
-        ['heading', 'Heading (optional)', 'text'],
-        ['items', 'Items — one per line, as: Title | Description', 'items'],
+        ['variant', 'Style', 'select', [['solid', 'Solid'], ['outline', 'Outline'], ['secondary', 'Secondary colour'], ['link', 'Text link']]],
+        ['size', 'Size', 'select', [['normal', 'Normal'], ['large', 'Large']]],
+        ['align', 'Alignment', 'select', ALIGN_CL],
+        ['new_tab', 'Open in a new tab', 'check'],
       ],
     },
     quote: {
-      label: 'Quote',
+      label: 'Quote', group: 'Content',
       make: () => ({ type: 'quote', body: 'A kind word from a customer.', attribution: '' }),
       summary: (b) => (b.body || '').slice(0, 60),
-      fields: [['body', 'Quote', 'textarea'], ['attribution', 'Attribution (optional)', 'text']],
+      fields: [['body', 'Quote', 'textarea', 4], ['attribution', 'Attribution (optional)', 'text']],
+    },
+    table: {
+      label: 'Table', group: 'Content',
+      make: () => ({ type: 'table', rows: 'Plan | Price | Users\nStarter | Free | 1\nPro | $29 | 10', header: true, striped: true }),
+      summary: (b) => `${(b.rows || '').split('\n').filter(Boolean).length} row(s)`,
+      fields: [
+        ['caption', 'Caption (optional)', 'text'],
+        ['rows', 'Rows — one per line, cells separated by |', 'textarea', 8],
+        ['header', 'First row is a header', 'check'],
+        ['striped', 'Striped rows', 'check'],
+        ['compact', 'Compact', 'check'],
+      ],
+    },
+    faq: {
+      label: 'FAQ / Accordion', group: 'Content',
+      make: () => ({ type: 'faq', heading: 'Frequently asked questions', open_first: false, items: [{ question: 'How does it work?', answer: 'Explain it here.' }] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING,
+        ['items', 'Questions', 'list', { label: 'Question', max: 24, fields: [['question', 'Question', 'text'], ['answer', 'Answer', 'textarea', 3]] }],
+        ['open_first', 'Open the first answer by default', 'check'],
+      ],
+    },
+    steps: {
+      label: 'Steps / How it works', group: 'Content',
+      make: () => ({ type: 'steps', heading: 'How it works', layout: 'row', items: [{ title: 'Sign up', body: '' }, { title: 'Set up', body: '' }, { title: 'Go live', body: '' }] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING, SUB,
+        ['items', 'Steps', 'list', { label: 'Step', max: 8, fields: [['title', 'Title', 'text'], ['body', 'Description', 'textarea', 2]] }],
+        ['layout', 'Layout', 'select', [['row', 'Side by side'], ['list', 'Stacked']]],
+      ],
+    },
+    // ------------------------------------------------------------ Layout
+    columns: {
+      label: 'Columns', group: 'Layout',
+      make: () => ({ type: 'columns', count: 2, align: 'left', gap: 'medium', items: [{ heading: 'Left column', body: 'Text for this column.' }, { heading: 'Right column', body: 'Text for this column.' }] }),
+      summary: (b) => `${b.count || (b.items || []).length} columns`,
+      fields: [
+        ['count', 'Number of columns', 'select', [[2, '2'], [3, '3'], [4, '4']], Number],
+        ['items', 'Columns', 'list', {
+          label: 'Column', max: 4,
+          fields: [['image', 'Image (optional)', 'image'], ['heading', 'Heading', 'text'], ['body', 'Text', 'textarea', 4], ['button_label', 'Button label', 'text'], ['button_href', 'Button link', 'text']],
+        }],
+        ['gap', 'Spacing', 'select', [['small', 'Tight'], ['medium', 'Normal'], ['large', 'Wide']]],
+        ['align', 'Alignment', 'select', ALIGN_LC],
+      ],
+    },
+    media_text: {
+      label: 'Image + text', group: 'Layout',
+      make: () => ({ type: 'media_text', src: '', alt: '', heading: 'A heading beside the image', body: 'Text beside the image.', side: 'left', ratio: 'auto', split: 'half' }),
+      summary: (b) => b.heading || b.src || 'image + text',
+      fields: [
+        ['src', 'Image', 'image'],
+        ['alt', 'Alt text', 'text'],
+        ['eyebrow', 'Eyebrow (small line above)', 'text'],
+        ['heading', 'Heading', 'text'],
+        ['body', 'Text', 'textarea', 6],
+        ['button_label', 'Button label', 'text'],
+        ['button_href', 'Button link', 'text'],
+        ['side', 'Image on the', 'select', [['left', 'Left'], ['right', 'Right']]],
+        ['ratio', 'Image crop', 'select', [['auto', 'As uploaded'], ['square', 'Square'], ['wide', 'Wide'], ['portrait', 'Portrait']]],
+        ['split', 'Split', 'select', [['half', 'Half / half'], ['third', 'Image a third, text two thirds']]],
+      ],
+    },
+    spacer: {
+      label: 'Spacer', group: 'Layout',
+      make: () => ({ type: 'spacer', size: 'medium' }),
+      summary: (b) => b.size,
+      fields: [['size', 'Size', 'select', [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']]]],
+    },
+    divider: {
+      label: 'Divider', group: 'Layout',
+      make: () => ({ type: 'divider' }),
+      summary: () => 'horizontal rule',
+      fields: [],
+    },
+    // --------------------------------------------------------- Marketing
+    features: {
+      label: 'Feature grid', group: 'Marketing',
+      make: () => ({
+        type: 'features', heading: 'Why choose us', columns: 3, style: 'cards',
+        items: [{ title: 'Fast', body: 'Describe a benefit.', icon: '⚡' }, { title: 'Reliable', body: 'Describe another.', icon: '🛡️' }, { title: 'Friendly', body: 'And one more.', icon: '💬' }],
+      }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING, SUB,
+        ['items', 'Features', 'list', {
+          label: 'Feature', max: 12,
+          fields: [['icon', 'Icon (an emoji or symbol)', 'text'], ['title', 'Title', 'text'], ['body', 'Description', 'textarea', 2], ['href', 'Link (optional)', 'text']],
+        }],
+        COLS(2, 4, 3),
+        ['style', 'Style', 'select', [['cards', 'Cards'], ['plain', 'Plain'], ['icons', 'Icon circles, centred']]],
+      ],
+    },
+    cta: {
+      label: 'Call to action', group: 'Marketing',
+      make: () => ({ type: 'cta', heading: 'Ready to get started?', body: 'Join hundreds of teams already using it.', button_label: 'Get started', button_href: '#', style: 'primary', align: 'center' }),
+      summary: (b) => b.heading,
+      fields: [
+        ['heading', 'Heading', 'text'],
+        ['body', 'Text', 'textarea', 2],
+        ['button_label', 'Button label', 'text'],
+        ['button_href', 'Button link', 'text'],
+        ['button2_label', 'Second button label', 'text'],
+        ['button2_href', 'Second button link', 'text'],
+        ['style', 'Style', 'select', [['primary', 'Primary colour'], ['tint', 'Light tint'], ['dark', 'Dark'], ['outline', 'Outlined']]],
+        ['align', 'Layout', 'select', [['center', 'Centred'], ['split', 'Text left, buttons right']]],
+      ],
+    },
+    pricing: {
+      label: 'Pricing table', group: 'Marketing',
+      make: () => ({
+        type: 'pricing', heading: 'Simple pricing',
+        items: [
+          { name: 'Starter', price: 'Free', period: '', features: 'One project\nCommunity support', button_label: 'Start free', button_href: '#' },
+          { name: 'Pro', price: '$29', period: '/month', features: 'Unlimited projects\nPriority support\nAnalytics', button_label: 'Start trial', button_href: '#', featured: true, badge: 'Popular' },
+        ],
+      }),
+      summary: (b) => `${(b.items || []).length} plan(s)`,
+      fields: [
+        HEADING, SUB,
+        ['items', 'Plans', 'list', {
+          label: 'Plan', max: 6,
+          fields: [
+            ['name', 'Name', 'text'], ['price', 'Price', 'text'], ['period', 'Period (e.g. /month)', 'text'],
+            ['description', 'Short description', 'text'], ['features', 'Features — one per line', 'textarea', 4],
+            ['button_label', 'Button label', 'text'], ['button_href', 'Button link', 'text'],
+            ['badge', 'Badge (e.g. Popular)', 'text'], ['featured', 'Highlight this plan', 'check'],
+          ],
+        }],
+      ],
+    },
+    testimonials: {
+      label: 'Testimonials', group: 'Marketing',
+      make: () => ({ type: 'testimonials', heading: 'What customers say', layout: 'grid', items: [{ quote: 'It just works.', name: 'A happy customer', role: '', rating: 5 }] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING,
+        ['items', 'Testimonials', 'list', {
+          label: 'Testimonial', max: 12,
+          fields: [['quote', 'Quote', 'textarea', 3], ['name', 'Name', 'text'], ['role', 'Role / company', 'text'], ['avatar', 'Photo (optional)', 'image'],
+            ['rating', 'Stars', 'select', [[0, 'None'], [5, '★★★★★'], [4, '★★★★'], [3, '★★★']], Number]],
+        }],
+        ['layout', 'Layout', 'select', [['grid', 'Grid'], ['carousel', 'Carousel (swipe)'], ['single', 'One at a time, centred']]],
+      ],
+    },
+    stats: {
+      label: 'Stats / Numbers', group: 'Marketing',
+      make: () => ({ type: 'stats', columns: 4, items: [{ value: '10k+', label: 'Customers' }, { value: '99.9%', label: 'Uptime' }, { value: '24/7', label: 'Support' }] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING,
+        ['items', 'Numbers', 'list', { label: 'Number', max: 8, fields: [['value', 'Value (e.g. 10k+)', 'text'], ['label', 'Label', 'text']] }],
+        COLS(2, 4, 4),
+      ],
+    },
+    logos: {
+      label: 'Logo strip', group: 'Marketing',
+      make: () => ({ type: 'logos', heading: 'Trusted by', grayscale: true, items: [] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING,
+        ['items', 'Logos', 'list', { label: 'Logo', max: 12, fields: [['src', 'Logo image', 'image'], ['alt', 'Company name', 'text'], ['href', 'Link (optional)', 'text']] }],
+        ['grayscale', 'Show in grey, colour on hover', 'check'],
+      ],
+    },
+    team: {
+      label: 'Team', group: 'Marketing',
+      make: () => ({ type: 'team', heading: 'Meet the team', columns: 3, items: [{ name: 'Jane Doe', role: 'Founder', bio: '' }] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING, SUB,
+        ['items', 'People', 'list', { label: 'Person', max: 16, fields: [['photo', 'Photo', 'image'], ['name', 'Name', 'text'], ['role', 'Role', 'text'], ['bio', 'Short bio', 'textarea', 2], ['href', 'Link (optional)', 'text']] }],
+        COLS(2, 4, 3),
+      ],
+    },
+    notice: {
+      label: 'Announcement bar', group: 'Marketing',
+      make: () => ({ type: 'notice', text: '🎉 Launch week — 20% off everything', link_label: 'See offers', href: '#', style: 'primary' }),
+      summary: (b) => b.text,
+      fields: [
+        ['text', 'Text', 'text'],
+        ['link_label', 'Link label (optional)', 'text'],
+        ['href', 'Link', 'text'],
+        ['style', 'Colour', 'select', [['primary', 'Primary'], ['secondary', 'Secondary'], ['dark', 'Dark'], ['tint', 'Light tint']]],
+      ],
     },
     form: {
-      label: 'Lead form',
+      label: 'Lead form', group: 'Marketing',
       make: () => ({ type: 'form', form_slug: '', heading: 'Get in touch', button_label: 'Send' }),
       summary: (b) => b.form_slug ? `form: ${b.form_slug}` : 'pick a form',
       fields: [
@@ -576,8 +820,67 @@
         ['button_label', 'Button label', 'text'],
       ],
     },
+    // -------------------------------------------------------------- Site
+    header: {
+      label: 'Header / Navigation', group: 'Site',
+      make: () => ({ type: 'header', logo_text: 'Your brand', logo_href: '/', links: [{ label: 'Home', href: '/' }, { label: 'About', href: '#about' }, { label: 'Contact', href: '#contact' }], button_label: '', button_href: '', sticky: true, style: 'line' }),
+      summary: (b) => `${b.logo_text || 'logo'} · ${(b.links || []).length} link(s)`,
+      fields: [
+        ['logo_src', 'Logo image (optional)', 'image'],
+        ['logo_text', 'Brand name', 'text'],
+        ['logo_href', 'Brand link', 'text'],
+        ['links', 'Menu links', 'list', { label: 'Link', max: 10, fields: [['label', 'Label', 'text'], ['href', 'Link', 'text']] }],
+        ['button_label', 'Button label (optional)', 'text'],
+        ['button_href', 'Button link', 'text'],
+        ['style', 'Style', 'select', [['line', 'Underlined'], ['plain', 'Plain'], ['filled', 'Filled']]],
+        ['sticky', 'Stick to the top while scrolling', 'check'],
+      ],
+    },
+    footer: {
+      label: 'Footer', group: 'Site',
+      make: () => ({ type: 'footer', brand: 'Your brand', tagline: '', columns: [{ heading: 'Company', links: 'About | #about\nContact | #contact' }], social: [], copyright: `© ${new Date().getFullYear()} Your brand`, style: 'tint' }),
+      summary: (b) => b.brand || 'footer',
+      fields: [
+        ['brand', 'Brand name', 'text'],
+        ['tagline', 'Tagline', 'textarea', 2],
+        ['columns', 'Link columns', 'list', { label: 'Column', max: 4, fields: [['heading', 'Heading', 'text'], ['links', 'Links — one per line, as: Label | /link', 'textarea', 4]] }],
+        ['social', 'Social links', 'list', {
+          label: 'Social link', max: 10,
+          fields: [['network', 'Network', 'select', [['facebook', 'Facebook'], ['instagram', 'Instagram'], ['x', 'X'], ['linkedin', 'LinkedIn'], ['youtube', 'YouTube'], ['tiktok', 'TikTok'], ['github', 'GitHub'], ['whatsapp', 'WhatsApp'], ['email', 'Email'], ['website', 'Website']]], ['href', 'Link', 'text']],
+        }],
+        ['copyright', 'Copyright line', 'text'],
+        ['style', 'Style', 'select', [['tint', 'Light tint'], ['plain', 'Plain'], ['dark', 'Dark']]],
+      ],
+    },
+    contact: {
+      label: 'Contact details', group: 'Site',
+      make: () => ({ type: 'contact', heading: 'Contact us', address: '', phone: '', email: '', hours: '', show_map: false, map_zoom: 15 }),
+      summary: (b) => b.email || b.phone || 'contact details',
+      fields: [
+        HEADING,
+        ['address', 'Address', 'textarea', 2],
+        ['phone', 'Phone', 'text'],
+        ['email', 'Email', 'text'],
+        ['hours', 'Opening hours', 'textarea', 2],
+        ['show_map', 'Show a map of the address', 'check'],
+      ],
+    },
+    social: {
+      label: 'Social links', group: 'Site',
+      make: () => ({ type: 'social', heading: '', align: 'center', style: 'pills', items: [] }),
+      summary: (b) => items((b.items || []).length),
+      fields: [
+        HEADING,
+        ['items', 'Links', 'list', {
+          label: 'Link', max: 10,
+          fields: [['network', 'Network', 'select', [['facebook', 'Facebook'], ['instagram', 'Instagram'], ['x', 'X'], ['linkedin', 'LinkedIn'], ['youtube', 'YouTube'], ['tiktok', 'TikTok'], ['github', 'GitHub'], ['whatsapp', 'WhatsApp'], ['email', 'Email'], ['website', 'Website']]], ['href', 'Link', 'text']],
+        }],
+        ['style', 'Style', 'select', [['pills', 'Pills'], ['text', 'Plain text']]],
+        ['align', 'Alignment', 'select', ALIGN_CL],
+      ],
+    },
     html: {
-      label: 'HTML',
+      label: 'HTML', group: 'Site',
       make: () => ({
         type: 'html',
         html: '<h2>Heading</h2>\n<p>Paste or write HTML here.</p>',
@@ -597,22 +900,80 @@
         [false, 'Leave the markup unstyled']],
       widthOptions: [['normal', 'Content width'], ['wide', 'Wide'], ['full', 'Full bleed']],
     },
-    spacer: {
-      label: 'Spacer',
-      make: () => ({ type: 'spacer', size: 'medium' }),
-      summary: (b) => b.size,
-      fields: [['size', 'Size', 'select', [['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']]]],
-    },
-    divider: {
-      label: 'Divider',
-      make: () => ({ type: 'divider' }),
-      summary: () => 'horizontal rule',
-      fields: [],
-    },
   };
 
-  const slugify = (text) => text.toLowerCase().trim()
-    .replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+  const PALETTE_GROUPS = ['Layout', 'Content', 'Media', 'Marketing', 'Site'];
+
+  // The Design panel every block drawer ends with. Same spec language.
+  const DESIGN_FIELDS = [
+    ['bg', 'Background', 'select', [['none', 'None'], ['tint', 'Light tint'], ['primary', 'Primary colour'],
+      ['secondary', 'Secondary colour'], ['dark', 'Dark'], ['custom', 'Custom colour…'], ['image', 'Image…']]],
+    ['bg_color', 'Background colour', 'color'],
+    ['bg_image', 'Background image', 'image'],
+    ['text_color', 'Text colour', 'color'],
+    ['padding', 'Vertical padding', 'select', [['none', 'Default'], ['small', 'Small'], ['medium', 'Medium'], ['large', 'Large']]],
+    ['width', 'Width', 'select', [['content', 'Content width'], ['wide', 'Wide'], ['full', 'Full bleed (edge to edge)']]],
+    ['animate', 'Animate on scroll', 'select', [['none', 'None'], ['fade', 'Fade in'], ['rise', 'Rise in']]],
+    ['hide_on', 'Visibility', 'select', [['none', 'Show everywhere'], ['mobile', 'Hide on phones'], ['desktop', 'Hide on desktop']]],
+    ['anchor', 'Anchor id — link to it with #id', 'text'],
+    ['css_class', 'Extra CSS class', 'text'],
+  ];
+  const designSummary = (d) => {
+    if (!d) return '';
+    const bits = [];
+    if (d.bg && d.bg !== 'none') bits.push(`${d.bg} background`);
+    if (d.padding && d.padding !== 'none') bits.push(`${d.padding} padding`);
+    if (d.width && d.width !== 'content') bits.push(d.width);
+    if (d.animate && d.animate !== 'none') bits.push(d.animate);
+    if (d.hide_on && d.hide_on !== 'none') bits.push(`hidden on ${d.hide_on}`);
+    if (d.anchor) bits.push(`#${d.anchor}`);
+    return bits.join(', ');
+  };
+
+  /**
+   * Title -> URL slug. Accents are folded ("Café" -> "cafe") rather than
+   * dropped, so a non-ASCII title still produces something; `typing`
+   * keeps a trailing dash so "my-" can become "my-page" while the field
+   * normalises on every keystroke.
+   */
+  const slugify = (text, { typing = false } = {}) => {
+    const folded = String(text || '').normalize('NFKD').replace(/[\u0300-\u036f]/g, '');
+    let slug = folded.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+/, '');
+    if (!typing) slug = slug.replace(/-+$/g, '');
+    return slug.slice(0, 80);
+  };
+
+  /**
+   * A slug input that cannot hold an invalid slug: it normalises what is
+   * typed as it is typed, and shows the URL it will produce underneath.
+   * `follow` is the title input to derive from until the slug is edited
+   * by hand — and clearing it hands control back to the title.
+   */
+  function slugField(tenant, { value = '', follow = null } = {}) {
+    const input = h('input', { type: 'text', value, placeholder: 'spring-campaign', spellcheck: 'false' });
+    const preview = h('p.md-hint.mono');
+    let touched = Boolean(value);
+    const paint = () => {
+      const slug = slugify(input.value);
+      preview.textContent = slug ? `/p/${tenant}/${slug}` : 'Add a slug — it becomes the page’s address.';
+    };
+    input.addEventListener('input', () => {
+      const caret = input.selectionStart;
+      const before = input.value.length;
+      input.value = slugify(input.value, { typing: true });
+      // Keep the caret where it was, adjusted for what normalising removed.
+      const at = Math.max(0, caret - (before - input.value.length));
+      input.setSelectionRange(at, at);
+      touched = input.value !== '';
+      paint();
+    });
+    input.addEventListener('blur', () => { input.value = slugify(input.value); paint(); });
+    follow?.addEventListener('input', () => {
+      if (!touched) { input.value = slugify(follow.value); paint(); }
+    });
+    paint();
+    return { input, node: h('div', {}, [input, preview]), value: () => slugify(input.value) };
+  }
 
   // ================================================================ list
   async function pages(ctx) {
@@ -676,25 +1037,25 @@
 
   function newPageForm(ctx) {
     const title = h('input', { type: 'text', placeholder: 'Spring campaign' });
-    const slug = h('input', { type: 'text', placeholder: 'spring-campaign' });
+    const slug = slugField(ctx.session.user.tenantSlug, { follow: title });
     const metaTitle = h('input', { type: 'text', maxlength: 80, placeholder: 'defaults to the page title' });
     const description = h('textarea', { rows: 3, maxlength: 300 });
     const starter = select([
       ['blocks', 'Blocks — a hero and a paragraph to edit'],
       ['html', 'HTML — write the whole page as markup'],
     ], 'blocks');
-    let slugTouched = false;
-    slug.addEventListener('input', () => { slugTouched = true; });
-    title.addEventListener('input', () => { if (!slugTouched) slug.value = slugify(title.value); });
-
     const submit = h('button.btn.btn-primary', {
       type: 'button', text: 'Create page',
       onclick: async () => {
+        if (!slug.value()) {
+          toast('Add a URL slug — the page needs an address.', 'error');
+          return slug.input.focus();
+        }
         submit.disabled = true;
         try {
           const res = await api.post('/api/pages', {
             title: title.value.trim(),
-            slug: slug.value.trim(),
+            slug: slug.value(),
             description: description.value.trim(),
             seo: { meta_title: metaTitle.value.trim() },
             starter: starter.value,
@@ -713,7 +1074,7 @@
       subtitle: 'It starts as a draft — publish it when it is ready.',
       body: [
         field('Title', title),
-        field('URL slug', slug),
+        field('URL slug', slug.node),
         field('Start with', starter),
         // Asked for here rather than only in page settings: these two
         // tags are what a search result and a shared link show, and a
@@ -866,10 +1227,18 @@
                 : blockDrawer(block, index)) : null,
             style: admin ? 'cursor:pointer' : '',
           }, [
-            h('div.cell-name', { text: def.label }),
+            h('div.cell-name', {}, [
+              h('span.pb-kind', { text: def.group || 'block' }),
+              def.label,
+              block.design ? h('span.pb-design-dot', { title: `Design: ${designSummary(block.design)}` }) : null,
+            ]),
             h('div.cell-meta', { text: def.summary(block) || '—' }),
           ]),
           admin ? h('div.pb-row-actions', {}, [
+            h('button.icon-btn', {
+              type: 'button', text: '⧉', 'aria-label': 'Duplicate block',
+              onclick: () => { blocks.splice(index + 1, 0, JSON.parse(JSON.stringify(block))); saveBlocks(); },
+            }),
             h('button.icon-btn', {
               type: 'button', text: '↑', 'aria-label': 'Move up', disabled: index === 0,
               onclick: () => { [blocks[index - 1], blocks[index]] = [blocks[index], blocks[index - 1]]; saveBlocks(); },
@@ -888,49 +1257,191 @@
     }
 
     // ------------------------------------------------------ block editor
+    /** Which of the two side views is showing: 'blocks' or 'html'. */
+    function setSideView(view) {
+      // Only ever called after the editor is mounted (the consts it
+      // uses are declared at the mount site), and never on an HTML
+      // page, which has one view.
+      if (page.mode === 'html') return;
+      const next = view === 'html' ? 'html' : 'blocks';
+      viewSelect.value = next;
+      try { localStorage.setItem('pb-side-view', next); } catch { /* private mode */ }
+      // The nodes are kept, not rebuilt, so typing in the code pane
+      // survives a look at the block list and back.
+      mount(sideBody, next === 'html' ? [codeSection] : [blocksPanel]);
+    }
+
+    // ------------------------------------------------- field controls
+    /**
+     * One control for one field spec. Used for a block's own fields and
+     * for the fields of every item in a repeater, so the two never
+     * disagree about what "an image field" is. Returns { node, read }.
+     */
+    function makeControl([key, label, kind, options, coerce], value) {
+      let node;
+      let read;
+      if (kind === 'toggle') {
+        node = select(options, value !== false, null);
+        read = () => node.value === 'true';
+      } else if (kind === 'check') {
+        node = h('input', { type: 'checkbox', checked: Boolean(value) });
+        read = () => node.checked;
+      } else if (kind === 'textarea' || kind === 'rich') {
+        node = h('textarea', { rows: kind === 'rich' ? 14 : (Number(options) || 5), value: value || '' });
+        read = () => node.value;
+      } else if (kind === 'select') {
+        node = select(options, value, null);
+        read = () => (coerce ? coerce(node.value) : node.value);
+      } else if (kind === 'formselect') {
+        node = select([['', 'Choose a form…'], ...formOptions], value, null);
+        read = () => node.value;
+      } else if (kind === 'number') {
+        const [min, max] = options || [0, 100];
+        node = h('input', { type: 'number', min, max, value: value ?? '' });
+        read = () => Number(node.value);
+      } else if (kind === 'image') {
+        const input = h('input', { type: 'text', value: value || '', placeholder: 'https://… or pick from the library' });
+        const thumb = h('img.pb-image-thumb', { alt: '', src: value || '', hidden: !value });
+        const sync = () => {
+          const url = input.value.trim();
+          thumb.hidden = !url;
+          if (url) thumb.src = url;
+        };
+        input.addEventListener('input', sync);
+        node = h('div.pb-image-field', {}, [thumb, input, h('button.btn.btn-sm', {
+          type: 'button', text: 'Browse',
+          onclick: () => pickImage((url) => { input.value = url; sync(); }),
+        })]);
+        read = () => input.value.trim();
+      } else if (kind === 'color') {
+        // A colour input cannot be empty, so "no colour" is its own switch.
+        const use = h('input', { type: 'checkbox', checked: Boolean(value) });
+        const color = h('input', { type: 'color', value: value || '#ffffff' });
+        color.addEventListener('input', () => { use.checked = true; });
+        node = h('div.pb-color-field', {}, [color, h('label.pb-check', { style: 'margin:0' }, [use, 'use this colour'])]);
+        read = () => (use.checked ? color.value : '');
+      } else if (kind === 'list') {
+        return makeRepeater(options, value);
+      } else {
+        node = h('input', { type: 'text', value: value ?? '' });
+        read = () => (coerce ? coerce(node.value) : node.value);
+      }
+      return { node, read };
+    }
+
+    /** Label + control, in the shape each kind reads best in. */
+    function fieldFor(spec, node, { toolbar = false } = {}) {
+      const [, label, kind] = spec;
+      if (kind === 'check') return h('label.pb-check', {}, [node, label]);
+      if (toolbar && (kind === 'textarea' || kind === 'rich')) return field(label, mdToolbar(node, kind === 'rich'));
+      return field(label, node);
+    }
+
+    /**
+     * A repeater: the items of a gallery, the plans of a pricing table.
+     * Each item is a card of its own controls with move/remove buttons;
+     * the DOM nodes are kept across reorders, so typing is never lost.
+     */
+    function makeRepeater({ label: itemLabel, fields, max = 24 }, items) {
+      const list = h('div.pb-items');
+      const rows = [];
+      const add = h('button.btn.btn-sm.pb-items-add', {
+        type: 'button', text: `+ Add ${itemLabel.toLowerCase()}`,
+        onclick: () => { addRow({}); paint(); rows[rows.length - 1].node.querySelector('input,textarea,select')?.focus(); },
+      });
+
+      function paint() {
+        rows.forEach((row, i) => { row.num.textContent = `${itemLabel} ${i + 1}`; });
+        mount(list, rows.length ? rows.map((row) => row.node)
+          : h('p.muted', { text: `No ${itemLabel.toLowerCase()}s yet.` }));
+        add.disabled = rows.length >= max;
+      }
+      function move(row, dir) {
+        const i = rows.indexOf(row);
+        const j = i + dir;
+        if (j < 0 || j >= rows.length) return;
+        [rows[i], rows[j]] = [rows[j], rows[i]];
+        paint();
+      }
+      function addRow(item) {
+        const controls = fields.map((spec) => ({ key: spec[0], ...makeControl(spec, item[spec[0]]) }));
+        const num = h('span');
+        const row = { controls, num, node: null };
+        row.node = h('div.pb-item', {}, [
+          h('div.pb-item-head', {}, [
+            num, h('div.spacer'),
+            h('button.icon-btn', { type: 'button', text: '↑', 'aria-label': 'Move up', onclick: () => move(row, -1) }),
+            h('button.icon-btn', { type: 'button', text: '↓', 'aria-label': 'Move down', onclick: () => move(row, 1) }),
+            h('button.icon-btn', { type: 'button', text: '×', 'aria-label': 'Remove', onclick: () => { rows.splice(rows.indexOf(row), 1); paint(); } }),
+          ]),
+          ...controls.map((c, i) => fieldFor(fields[i], c.node)),
+        ]);
+        rows.push(row);
+      }
+
+      (Array.isArray(items) ? items : []).forEach(addRow);
+      paint();
+      return {
+        node: h('div', {}, [list, add]),
+        read: () => rows.map((row) => Object.fromEntries(row.controls.map((c) => [c.key, c.read()]))),
+      };
+    }
+
+    /** The media library, as a picker: a nested drawer of thumbnails. */
+    function pickImage(onPick) {
+      const grid = h('div.pb-media-grid', {}, spinner());
+      const search = h('input', { type: 'search', placeholder: 'Search by file name, title or alt text' });
+      let timer = null;
+
+      async function load() {
+        const q = search.value.trim();
+        try {
+          const { media } = await api.get(`/api/media?mime=image&per_page=120${q ? `&q=${encodeURIComponent(q)}` : ''}`);
+          const ready = (media || []).filter((m) => m.url);
+          mount(grid, ready.length ? ready.map((m) => h('button.pb-media-pick', {
+            type: 'button', title: m.original_filename,
+            onclick: () => { onPick(m.url); closeDrawer(); },
+          }, [h('img', { src: m.url, alt: '', loading: 'lazy' }), h('span', { text: m.original_filename })]))
+            : h('p.muted', { text: q ? 'No images match.' : 'No images yet — upload some under Media.' }));
+        } catch (err) { mount(grid, h('p.muted', { text: err.message })); }
+      }
+      search.addEventListener('input', () => { clearTimeout(timer); timer = setTimeout(load, 300); });
+      openDrawer({
+        title: 'Choose an image',
+        subtitle: 'From the media library. Upload new files under Media.',
+        body: [field('Search', search), grid],
+      });
+      load();
+    }
+
+    // ------------------------------------------------------ block editor
     function blockDrawer(block, index) {
       const def = BLOCKS[block.type];
-      const controls = [];
+      const controls = def.fields.map((spec) => ({ key: spec[0], spec, ...makeControl(spec, block[spec[0]]) }));
 
-      def.fields.forEach(([key, label, kind, options, coerce]) => {
-        let control;
-        if (kind === 'toggle') {
-          // A select rather than a checkbox: the two options each need a
-          // sentence to be understandable, which a checkbox label cannot
-          // carry well.
-          control = select(options, block[key] !== false, null);
-        } else if (kind === 'textarea' || kind === 'rich') {
-          control = h('textarea', { rows: kind === 'rich' ? 14 : 6, value: block[key] || '' });
-        } else if (kind === 'select') {
-          control = select(options, block[key], null);
-        } else if (kind === 'formselect') {
-          control = select([['', 'Choose a form…'], ...formOptions], block[key], null);
-        } else if (kind === 'items') {
-          control = h('textarea', {
-            rows: 6,
-            value: (block[key] || []).map((i) => [i.title, i.body].filter(Boolean).join(' | ')).join('\n'),
-          });
-        } else {
-          control = h('input', { type: 'text', value: block[key] ?? '' });
-        }
-        controls.push({ key, label, kind, coerce, control });
+      // Design: the same panel under every block, folded away.
+      const design = block.design || {};
+      const designControls = DESIGN_FIELDS.map((spec) => ({ key: spec[0], spec, ...makeControl(spec, design[spec[0]]) }));
+      const byKey = Object.fromEntries(designControls.map((c) => [c.key, c]));
+      const designRows = designControls.map((c) => {
+        const row = fieldFor(c.spec, c.node);
+        c.row = row;
+        return row;
       });
+      // Only the colour picker for a custom background, only the image
+      // picker for an image background.
+      const syncDesign = () => {
+        const bg = byKey.bg.node.value;
+        byKey.bg_color.row.hidden = bg !== 'custom';
+        byKey.bg_image.row.hidden = bg !== 'image';
+      };
+      byKey.bg.node.addEventListener('change', syncDesign);
+      syncDesign();
 
       /** Read every control back into the block object. */
       function collect() {
-        controls.forEach(({ key, kind, coerce, control }) => {
-          if (kind === 'items') {
-            block[key] = control.value.split('\n').map((line) => {
-              const [title, ...rest] = line.split('|');
-              return { title: (title || '').trim(), body: rest.join('|').trim() };
-            }).filter((i) => i.title);
-          } else if (kind === 'toggle') {
-            // select values are strings; the block field is a boolean.
-            block[key] = control.value === 'true';
-          } else {
-            block[key] = coerce ? coerce(control.value) : control.value;
-          }
-        });
+        controls.forEach(({ key, read }) => { block[key] = read(); });
+        block.design = Object.fromEntries(designControls.map((c) => [c.key, c.read()]));
         blocks[index] = block;
       }
 
@@ -943,18 +1454,18 @@
         },
       });
 
+      const summaryNote = designSummary(block.design);
       openDrawer({
         // Lowercased so it reads as a sentence ("Edit hero") — but an
         // all-caps label is an acronym and must survive as one.
         title: `Edit ${def.label === def.label.toUpperCase() ? def.label : def.label.toLowerCase()}`,
         subtitle: 'Changes save to the draft — the live page updates on publish.',
         body: [
-          ...controls.map(({ kind, label, control }) => field(
-            label,
-            (kind === 'textarea' || kind === 'rich')
-              ? mdToolbar(control, kind === 'rich')
-              : control,
-          )),
+          ...controls.map(({ spec, node }) => fieldFor(spec, node, { toolbar: true })),
+          h('details.pb-design', { open: summaryNote ? 'open' : null }, [
+            h('summary', {}, ['Design', summaryNote ? h('small', { text: summaryNote }) : h('small', { text: 'background, spacing, width, motion' })]),
+            h('div.pb-design-body', {}, [h('div.pb-design-grid', {}, designRows)]),
+          ]),
           submit,
         ],
       });
@@ -965,7 +1476,7 @@
       const theme = page.theme || {};
       const seo = page.seo || {};
       const title = h('input', { type: 'text', value: page.title });
-      const slug = h('input', { type: 'text', value: page.slug });
+      const slug = slugField(tenant, { value: page.slug });
       const description = h('textarea', { rows: 3, maxlength: 300, value: page.description || '' });
       const metaTitle = h('input', {
         type: 'text', maxlength: 80, value: seo.meta_title || '',
@@ -998,7 +1509,12 @@
       const primary = h('input', { type: 'color', value: theme.primary || '#0b6e5a' });
       const background = h('input', { type: 'color', value: theme.background || '#ffffff' });
       const text = h('input', { type: 'color', value: theme.text || '#1c2422' });
-      const font = select([['system', 'Modern (sans-serif)'], ['serif', 'Classic (serif)'], ['mono', 'Technical (mono)']], theme.font || 'system');
+      const FONTS = [['system', 'Modern (sans-serif)'], ['humanist', 'Humanist (Gill Sans, Ubuntu)'], ['rounded', 'Rounded'],
+        ['serif', 'Classic (serif)'], ['display', 'Editorial (Palatino)'], ['mono', 'Technical (mono)']];
+      const font = select(FONTS, theme.font || 'system');
+      const secondary = h('input', { type: 'color', value: theme.secondary || '#d9822b' });
+      const headingFont = select([['same', 'Same as body text'], ...FONTS], theme.heading_font || 'same');
+      const radius = select([['sharp', 'Sharp'], ['soft', 'Soft'], ['round', 'Round']], theme.radius || 'soft');
       const width = select([['narrow', 'Narrow'], ['normal', 'Normal'], ['wide', 'Wide']], theme.max_width || 'normal');
 
       // Images only, newest first. Lazy: a page whose meta nobody edits
@@ -1026,7 +1542,7 @@
           try {
             ({ page } = await api.patch(`/api/pages/${id}`, {
               title: title.value.trim(),
-              slug: slug.value.trim(),
+              slug: slug.value() || page.slug,
               description: description.value.trim(),
               // Spread first: focus_keyword, schema_org and the image alt
               // are stored in the same block and no field here owns them.
@@ -1043,7 +1559,9 @@
                 nofollow: nofollow.checked,
               },
               theme: {
-                primary: primary.value, background: background.value, text: text.value,
+                primary: primary.value, secondary: secondary.value,
+                background: background.value, text: text.value,
+                heading_font: headingFont.value, radius: radius.value,
                 font: font.value, max_width: width.value,
               },
             }));
@@ -1061,7 +1579,7 @@
         body: [
           h('div.drawer-section', { text: 'Page' }),
           field('Title', title),
-          field('URL slug', slug),
+          field('URL slug', slug.node),
 
           h('div.drawer-section', { text: 'Search' }),
           field('SEO title', counted(metaTitle, 30, 60, seo.meta_title)),
@@ -1086,7 +1604,10 @@
           field('Accent colour', primary),
           field('Background colour', background),
           field('Text colour', text),
+          field('Secondary colour (badges, eyebrows, accents)', secondary),
           field('Typeface', font),
+          field('Heading typeface', headingFont),
+          field('Corners (buttons, cards, images)', radius),
           field('Content width', width),
           submit,
         ],
@@ -1127,17 +1648,24 @@
     }
 
     // ------------------------------------------------------------ layout
-    const palette = admin ? h('div.pb-palette', {}, Object.entries(BLOCKS).map(([type, def]) =>
-      h('button.btn.btn-sm', {
-        type: 'button', text: `+ ${def.label}`,
-        onclick: () => {
-          const block = def.make();
-          blocks.push(block);
-          if (type === 'html') { codeIndex = blocks.length - 1; saveBlocks(); }
-          else if (def.fields.length) blockDrawer(block, blocks.length - 1);
-          else saveBlocks();
-        },
-      }))) : h('p.muted', { text: 'Admins can edit this page.' });
+    const addBlock = (type, def) => {
+      const block = def.make();
+      blocks.push(block);
+      if (type === 'html') { codeIndex = blocks.length - 1; setSideView('html'); saveBlocks(); }
+      else if (def.fields.length) blockDrawer(block, blocks.length - 1);
+      else saveBlocks();
+    };
+    // Grouped: Layout, Content, Media, Marketing, Site. Thirty buttons in
+    // one row is a list you have to read; five groups is one you scan.
+    const palette = admin ? h('div.pb-palette', {}, PALETTE_GROUPS.map((group) => {
+      const members = Object.entries(BLOCKS).filter(([, def]) => def.group === group);
+      return members.length ? h('div.pb-palette-group', {}, [
+        h('div.pb-palette-label', { text: group }),
+        h('div.pb-palette-row', {}, members.map(([type, def]) => h('button.btn.btn-sm', {
+          type: 'button', text: `+ ${def.label}`, onclick: () => addBlock(type, def),
+        }))),
+      ]) : null;
+    })) : h('p.muted', { text: 'Admins can edit this page.' });
 
     // --------------------------------------------------- code section
     /**
@@ -1236,11 +1764,13 @@
 
     function selectCodeBlock(index) {
       if (index === codeIndex && codeEditor) {
+        setSideView('html');
         return codeEditor.textarea.focus();
       }
       stashCode();                       // switching must not lose typing
       const leavingWholePage = codeIndex === WHOLE_PAGE && codeLastClean !== null;
       codeIndex = index;
+      setSideView('html');
       codeLastClean = null;
       // The whole-page view writes over the preview's content column,
       // so the draft has to be re-rendered before another view trusts
@@ -1255,6 +1785,7 @@
       blocks.push(BLOCKS.html.make());
       codeIndex = blocks.length - 1;
       codeLastClean = null;
+      setSideView('html');
       // saveBlocks re-renders the section: the HTML block list changed,
       // and codeIndex now points at the new one.
       await saveBlocks();
@@ -1457,17 +1988,28 @@
     // An HTML page has no block list to show — the markup is the page —
     // so the editor takes that half of the screen instead.
     const htmlPage = page.mode === 'html';
+
+    // The side column shows one of two views: the block list, or the
+    // page's HTML. A dropdown switches between them; the choice sticks
+    // across pages so someone who works in code lands in code.
+    const blocksPanel = h('section.panel', {}, [
+      h('div.panel-head', {}, [h('h2', { text: 'Blocks' })]),
+      h('div.panel-body', {}, [blockList, h('div', { style: 'height:12px' }), palette]),
+    ]);
+    const sideBody = h('div.pb-side-body');
+    const viewSelect = select([['blocks', 'Block view'], ['html', 'HTML view']], 'blocks',
+      (e) => setSideView(e.target.value));
+    let sideView = 'blocks';
+    try { if (localStorage.getItem('pb-side-view') === 'html') sideView = 'html'; } catch { /* private mode */ }
+
     mount(ctx.el, h(`div.pb-editor${htmlPage ? '.is-html' : ''}`, {}, [
       h('div.pb-side', {}, htmlPage ? [codeSection] : [
-        h('section.panel', {}, [
-          h('div.panel-head', {}, [h('h2', { text: 'Blocks' })]),
-          h('div.panel-body', {}, [blockList, h('div', { style: 'height:12px' }), palette]),
-        ]),
-        // Under Blocks, in the page: the code section.
-        codeSection,
+        h('div.pb-side-switch', {}, [h('span.pb-side-label', { text: 'Show' }), viewSelect]),
+        sideBody,
       ]),
       h('div.pb-preview', {}, iframe),
     ]));
+    if (!htmlPage) setSideView(sideView);
 
     // #/pages?edit=<id>&block=<index> goes straight to that block on
     // arrival — how "create an HTML page" lands somewhere useful.
@@ -1477,7 +2019,7 @@
       // author closed. replaceState leaves the route alone: changing a
       // hash this way fires no hashchange.
       window.history.replaceState(null, '', `#/pages?edit=${id}`);
-      if (blocks[openIndex].type === 'html') codeIndex = openIndex;
+      if (blocks[openIndex].type === 'html') { codeIndex = openIndex; setSideView('html'); }
       else if ((BLOCKS[blocks[openIndex].type]?.fields || []).length) {
         blockDrawer(blocks[openIndex], openIndex);
       }

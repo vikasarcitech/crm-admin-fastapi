@@ -139,9 +139,14 @@ async def create_redirect(
 
 
 async def _would_loop(scoped: db.TenantDB, from_path: str, to_path: str) -> bool:
-    """Walk the chain forward from the new target."""
+    """Walk the chain forward from the new target.
+
+    Targets are followed by *path*: "A -> http://host/B" then "B -> A" is
+    the same loop as "A -> /B", and the visitor's browser will spin on it
+    just the same, so the absolute form is not allowed to hide it.
+    """
     seen = {from_path}
-    cursor = to_path
+    cursor = normalise_path(to_path)
     for _ in range(MAX_REDIRECT_HOPS):
         if cursor in seen:
             return True
@@ -152,8 +157,33 @@ async def _would_loop(scoped: db.TenantDB, from_path: str, to_path: str) -> bool
         )
         if not row:
             return False
-        cursor = row["to_path"]
+        cursor = normalise_path(row["to_path"])
     return True  # longer than MAX_REDIRECT_HOPS is a loop for practical purposes
+
+
+async def match_redirect(tenant_id: int, path: str) -> dict | None:
+    """The active redirect for a path, with its hit counted — or None.
+
+    Shared by the headless lookup below and by the pages this app serves
+    itself (/p/{tenant}/…), so a redirect made in the SEO screen fires
+    on both kinds of site the same way.
+    """
+    try:
+        from_path = normalise_path(path)
+    except HTTPException:
+        return None
+    row = await db.fetch_one(
+        """SELECT id, to_path, status_code FROM redirects
+            WHERE tenant_id = $1 AND from_path = $2 AND is_active""",
+        tenant_id, from_path,
+    )
+    if not row:
+        return None
+    # Counting hits is what makes "which redirects still matter" answerable.
+    await db.execute(
+        "UPDATE redirects SET hits = hits + 1, last_hit_at = now() WHERE id = $1", row["id"]
+    )
+    return dict(row)
 
 
 @router.patch("/redirects/{redirect_id}")
@@ -461,20 +491,9 @@ async def resolve_redirect(
     """Look up one path. A static frontend or edge function calls this on
     a 404 and issues the real redirect itself."""
     tenant = await _tenant_by_slug(tenant_slug, request)
-    from_path = normalise_path(path)
-
-    row = await db.fetch_one(
-        """SELECT id, to_path, status_code FROM redirects
-            WHERE tenant_id = $1 AND from_path = $2 AND is_active""",
-        tenant["id"], from_path,
-    )
+    row = await match_redirect(tenant["id"], path)
     if not row:
         return {"match": False}
-
-    # Counting hits is what makes "which redirects still matter" answerable.
-    await db.execute(
-        "UPDATE redirects SET hits = hits + 1, last_hit_at = now() WHERE id = $1", row["id"]
-    )
     return {"match": True, "toPath": row["to_path"], "statusCode": row["status_code"]}
 
 

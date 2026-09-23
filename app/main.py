@@ -254,10 +254,10 @@ async def http_error(request: Request, exc: StarletteHTTPException):
 async def validation_error(request: Request, exc: RequestValidationError):
     first = exc.errors()[0] if exc.errors() else {}
     field = ".".join(str(part) for part in first.get("loc", [])[1:]) or "request"
-    return JSONResponse(
-        status_code=400,
-        content={"error": f"{field}: {first.get('msg', 'is not valid')}"},
-    )
+    # Pydantic prefixes a validator's own message with "Value error, ";
+    # the message already says what is wrong, so the prefix is noise.
+    message = re.sub(r"^(?:Value|Assertion) error, ", "", str(first.get("msg", "is not valid")))
+    return JSONResponse(status_code=400, content={"error": f"{field}: {message}"})
 
 
 @app.exception_handler(Exception)

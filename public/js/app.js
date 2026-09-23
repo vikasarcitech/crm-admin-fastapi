@@ -18,27 +18,22 @@
       perm: 'analytics.view',
       icon: 'M4 20V10m5 10V4m5 16v-7m5 7V8' },
 
-    { path: 'content', label: 'Content', view: 'content', group: 'Content',
-      perm: 'content.view',
-      icon: 'M7 3h7l5 5v13H7zM14 3v5h5M10 13h6M10 17h6' },
-    { path: 'taxonomy', label: 'Categories & tags', view: 'taxonomy', group: 'Content',
-      perm: 'content.view',
-      icon: 'M4 7h16M4 12h10M4 17h6' },
+    // The content-items and taxonomy screens are deliberately off the
+    // menu: the page builder is the way this platform makes pages now.
+    // Their API and modules stay, so existing data and the menu editor's
+    // "Content item" links keep working.
     { path: 'media', label: 'Media', view: 'media', group: 'Content',
       perm: 'media.view',
       icon: 'M4 5h16v14H4zM8 11a2 2 0 100-4 2 2 0 000 4M4 16l5-4 4 3 3-2 4 3' },
     { path: 'pages', label: 'Page builder', view: 'pages', group: 'Content',
       icon: 'M4 5h16v4H4zM4 12h7v7H4zM14 12h6v7h-6z' },
 
-    { path: 'leads', label: 'Leads', view: 'leads', group: 'Pipeline',
-      countKey: 'all', perm: 'leads.view',
-      icon: 'M4 5h16M4 12h16M4 19h10' },
+    // Leads and Marketing are off the menu, like the content screens:
+    // the API, the lead intake and the modules stay, so forms keep
+    // collecting and nothing stored is touched.
     { path: 'forms', label: 'Forms', view: 'forms', group: 'Pipeline',
       perm: 'forms.manage',
       icon: 'M5 3h14v18H5zM9 8h6M9 12h6M9 16h3' },
-    { path: 'marketing', label: 'Marketing', view: 'marketing', group: 'Pipeline',
-      perm: 'marketing.view',
-      icon: 'M4 9v6l12 4V5zM18 10a3 3 0 010 4' },
 
     { path: 'seo', label: 'SEO', view: 'seo', group: 'Site',
       perm: 'seo.manage',
@@ -54,19 +49,11 @@
       icon: 'M4 19a5 5 0 0110 0M9 4a3 3 0 100 6 3 3 0 000-6' },
     { path: 'account', label: 'Account & roles', view: 'account', group: 'Admin',
       icon: 'M12 12a4 4 0 100-8 4 4 0 000 8M5 21a7 7 0 0114 0' },
-    { path: 'operations', label: 'Operations', view: 'operations', group: 'Admin',
-      perm: 'ops.view',
-      icon: 'M12 8v4l3 2M4 12a8 8 0 1016 0 8 8 0 00-16 0' },
-    { path: 'integrations', label: 'Integrations', view: 'integrations', group: 'Admin',
-      perm: 'webhooks.manage',
-      icon: 'M10 4v6H4M14 20v-6h6M4 14h6v6M20 10h-6V4' },
-    { path: 'webhooks', label: 'Raw webhooks', view: 'webhooks', group: 'Admin',
-      perm: 'webhooks.manage',
-      icon: 'M6 8a4 4 0 106 3M12 20a4 4 0 10-2-7' },
-    { path: 'activity', label: 'Activity', view: 'activity', group: 'Admin',
-      icon: 'M12 6v6l4 2M12 3a9 9 0 100 18 9 9 0 000-18' },
-    { path: 'settings', label: 'Lead settings', view: 'settings', group: 'Admin',
-      icon: 'M4 6h16M4 12h16M4 18h16' },
+    // Operations, Integrations, Raw webhooks, Activity and Lead settings
+    // are off the menu with the lead-desk screens. Their APIs and
+    // modules stay: connectors keep syncing, webhooks keep firing and
+    // the activity log keeps being written — they are just not screens
+    // in this admin any more.
 
     { path: 'platform', label: 'All sites', view: 'platform', group: 'Platform',
       perm: 'sites.manage',

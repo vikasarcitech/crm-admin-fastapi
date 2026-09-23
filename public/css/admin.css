@@ -1110,3 +1110,91 @@ textarea.pb-code {
 @media (max-width: 1100px) {
   .pb-html-editor { grid-template-columns: 1fr; }
 }
+
+/* ------------------------------------------ page builder: richer editing */
+/* The palette, grouped. Thirty buttons in one row is a list you read;
+   five short groups is one you scan. */
+.pb-palette { display: block; }
+.pb-palette-group { margin-bottom: 10px; }
+.pb-palette-group:last-child { margin-bottom: 0; }
+.pb-palette-label {
+  font-size: 11px; font-weight: 600; letter-spacing: .04em;
+  text-transform: uppercase; color: var(--muted); margin-bottom: 5px;
+}
+.pb-palette-row { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* Repeating items inside a block drawer: each one is a small card
+   with its own fields and its own move/remove controls. */
+.pb-items { display: grid; gap: 8px; }
+.pb-item {
+  border: 1px solid var(--line);
+  border-radius: var(--radius);
+  background: var(--surface);
+  padding: 10px 10px 4px;
+}
+.pb-item-head {
+  display: flex; align-items: center; gap: 6px;
+  margin-bottom: 8px; font-size: 12px; color: var(--muted);
+}
+.pb-item-head .spacer { flex: 1; }
+.pb-item .field { margin-bottom: 8px; }
+.pb-item .field > span { font-size: 12px; }
+.pb-item textarea, .pb-item input[type="text"] { font-size: 13px; }
+.pb-items-add { justify-self: start; }
+
+/* Image fields: the URL, and a button that opens the media library. */
+.pb-image-field { display: flex; gap: 6px; }
+.pb-image-field input { flex: 1; min-width: 0; }
+.pb-image-thumb {
+  width: 34px; height: 34px; border-radius: 4px; object-fit: cover;
+  border: 1px solid var(--line); background: var(--line-soft); flex: 0 0 auto;
+}
+.pb-image-thumb[hidden] { display: none; }
+.pb-media-grid {
+  display: grid; grid-template-columns: repeat(auto-fill, minmax(96px, 1fr)); gap: 8px;
+}
+.pb-media-pick {
+  border: 2px solid transparent; border-radius: var(--radius); padding: 0;
+  background: var(--surface); cursor: pointer; text-align: left; overflow: hidden;
+}
+.pb-media-pick:hover, .pb-media-pick:focus-visible { border-color: var(--accent); }
+.pb-media-pick img { width: 100%; aspect-ratio: 1; object-fit: cover; display: block; }
+.pb-media-pick span {
+  display: block; font-size: 11px; padding: 4px 6px; color: var(--muted);
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+
+/* Colour fields: swatch plus a way to say "none". */
+.pb-color-field { display: flex; align-items: center; gap: 8px; }
+.pb-color-field input[type="color"] { width: 44px; height: 30px; padding: 2px; }
+.pb-color-field .md-hint { margin: 0; }
+
+/* A checkbox row reads as one line, unlike the stacked .field. */
+.pb-check { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; font-size: 13.5px; }
+.pb-check input { width: auto; margin: 0; }
+
+/* The Design section at the bottom of every block drawer, folded away
+   because most edits are to words, not to backgrounds. */
+.pb-design { margin: 6px 0 14px; border-top: 1px solid var(--line); padding-top: 10px; }
+.pb-design summary { cursor: pointer; font-weight: 600; font-size: 13.5px; color: var(--ink); }
+.pb-design summary small { font-weight: 400; color: var(--muted); margin-left: 6px; }
+.pb-design .pb-design-body { padding-top: 10px; }
+.pb-design-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; }
+@media (max-width: 600px) { .pb-design-grid { grid-template-columns: 1fr; } }
+
+/* Block rows: a type badge before the name, so the list can be scanned
+   by kind rather than read. */
+.pb-row .cell-name { display: flex; align-items: center; gap: 8px; }
+.pb-kind {
+  font-size: 10px; font-weight: 600; letter-spacing: .04em; text-transform: uppercase;
+  padding: 2px 6px; border-radius: 3px; background: var(--line-soft); color: var(--muted);
+}
+.pb-row .pb-design-dot {
+  width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex: 0 0 auto;
+}
+
+/* Block view / HTML view switch at the top of the builder's side column. */
+.pb-side-switch { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+.pb-side-switch .pb-side-label { margin: 0; }
+.pb-side-switch select { max-width: 180px; }
+.pb-side-body .pb-code-panel { margin-top: 0; }

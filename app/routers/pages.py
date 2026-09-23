@@ -6,7 +6,7 @@ leak. Every publish snapshots a revision that can be restored later.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Request
-from fastapi.responses import HTMLResponse
+from fastapi.responses import HTMLResponse, RedirectResponse
 
 from .. import db, events, permissions, storage
 from ..config import settings
@@ -23,6 +23,7 @@ from ..pagebuilder import (
 from ..sanitize import describe_changes
 from ..schemas import PageCreate, PageHtmlCheck, PageModeChange, PageUpdate, collapse
 from ..security import CurrentUser, client_ip, require_role, require_user, tenant_db
+from .seo import match_redirect
 
 router = APIRouter(prefix="/api/pages", tags=["pages"])
 public_router = APIRouter(tags=["pages-public"])
@@ -737,9 +738,83 @@ async def preview_page(
     )
 
 
+# ============================================================== hosted form
+@public_router.get("/f/{tenant_slug}/{form_slug}", include_in_schema=False)
+async def hosted_form(tenant_slug: str, form_slug: str) -> HTMLResponse:
+    """A form on a page of its own, at a URL that can be shared or linked.
+
+    The same renderer and the same intake script as a Lead form block on
+    a built page — this is that block with nothing around it — so what
+    an author sees here is exactly what a visitor gets, and a form can
+    be used before (or without) a page being built for it.
+    """
+    row = await db.fetch_one(
+        """SELECT f.tenant_id, f.slug::text AS slug, f.name, f.settings,
+                  t.slug::text AS tenant_slug
+             FROM forms f JOIN tenants t ON t.id = f.tenant_id
+            WHERE t.slug = $1 AND t.is_active AND f.slug = $2 AND f.is_active""",
+        collapse(tenant_slug, 60),
+        collapse(form_slug, 60),
+    )
+    if not row:
+        raise HTTPException(404, "This form is not available.")
+
+    settings_ = row["settings"] if isinstance(row["settings"], dict) else {}
+    blocks = clean_blocks([{
+        "type": "form",
+        "form_slug": row["slug"],
+        "heading": row["name"],
+        "button_label": settings_.get("button_label") or "Send",
+    }])
+    html = render_page(
+        title=row["name"],
+        description=None,
+        blocks=blocks,
+        theme={},
+        tenant_slug=row["tenant_slug"],
+        forms=await _form_fields(row["tenant_id"], blocks),
+        seo={"noindex": True},
+    )
+    return HTMLResponse(
+        html,
+        headers={
+            "content-security-policy": PUBLIC_PAGE_CSP,
+            "cache-control": "public, max-age=60",
+        },
+    )
+
+
 # ============================================================== public page
-@public_router.get("/p/{tenant_slug}/{page_slug}", include_in_schema=False)
-async def public_page(tenant_slug: str, page_slug: str) -> HTMLResponse:
+@public_router.get("/p/{tenant_slug}/{page_path:path}", include_in_schema=False)
+async def public_page(tenant_slug: str, page_path: str, request: Request) -> HTMLResponse:
+    """Serve a published page — after the site's redirects have had their say.
+
+    Redirects are checked first and win over a page at the same address:
+    the SEO screen is where an author says "this URL now means that one",
+    and a redirect that only fires once the page is deleted is not what
+    anyone means by it. The path segment is `:path` so a from-path with
+    slashes in it (/p/demo/old/section/page) can match too; only a
+    single-segment path can then be a page.
+    """
+    tenant = await db.fetch_one(
+        "SELECT id FROM tenants WHERE slug = $1 AND is_active",
+        collapse(tenant_slug, 60),
+    )
+    if not tenant:
+        raise HTTPException(404, "This page is not available.")
+
+    redirect = await match_redirect(tenant["id"], request.url.path)
+    if redirect:
+        target = redirect["to_path"]
+        # The visitor's query string travels with them, as on any web server.
+        if request.url.query and "?" not in target:
+            target = f"{target}?{request.url.query}"
+        return RedirectResponse(target, status_code=redirect["status_code"])
+
+    page_slug = page_path.strip("/")
+    if not page_slug or "/" in page_slug:
+        raise HTTPException(404, "This page is not available.")
+
     row = await db.fetch_one(
         """SELECT p.tenant_id, p.slug::text AS slug, p.published_title,
                   p.published_description, p.published_blocks, p.published_theme,
