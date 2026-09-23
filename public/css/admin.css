@@ -629,22 +629,6 @@ select.md-btn {
 }
 .nav-group:first-child { padding-top: 6px; }
 
-.sidebar-foot .notify-link {
-  display: flex;
-  align-items: center;
-  gap: 6px;
-  color: #9db3b8;
-  font-size: 12px;
-  margin-bottom: 8px;
-}
-.sidebar-foot .notify-link:hover { color: #fff; text-decoration: none; }
-.sidebar-foot .notify-link .count {
-  background: var(--brass);
-  color: #17262a;
-  font: 500 11px/1 var(--mono);
-  padding: 2px 6px;
-  border-radius: 8px;
-}
 
 /* kit.tabs marks the active tab with a class, and aria-current
    because these tabs are links into the hash route, not a tablist. */

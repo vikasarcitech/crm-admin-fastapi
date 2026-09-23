@@ -495,9 +495,28 @@
         ]),
         h('td.cell-mono.hide-sm', { text: String(u.open_leads) }),
         h('td.cell-mono.hide-sm', { text: u.last_login_at ? relativeTime(u.last_login_at) : 'never' }),
-        h('td', {}, isAdmin ? h('button.btn.btn-sm', {
-          type: 'button', text: 'Edit', onclick: () => userForm(ctx, u),
-        }) : null),
+        h('td', {}, isAdmin ? h('div.row-actions', {}, [
+          h('button.btn.btn-sm', {
+            type: 'button', text: 'Edit', onclick: () => userForm(ctx, u),
+          }),
+          // Not for your own row: the API refuses it, and offering a
+          // button whose only outcome is an error is worse than no
+          // button.
+          u.id === ctx.session.user.id ? null : h('button.btn.btn-sm.btn-danger', {
+            type: 'button', text: 'Delete',
+            onclick: async () => {
+              // eslint-disable-next-line no-alert
+              if (!window.confirm(`Delete ${u.display_name || u.email}?\n\nThey are signed out `
+                + 'everywhere and can no longer sign in. Pages, media and leads they created '
+                + 'stay — they simply stop being named on them. This cannot be undone.')) return;
+              try {
+                const res = await api.del(`/api/users/${u.id}`);
+                toast(`${res.deleted} removed.`);
+                ctx.reload();
+              } catch (err) { toast(err.message, 'error'); }
+            },
+          }),
+        ]) : null),
       ]))),
     ]));
   }
@@ -509,14 +528,16 @@
     // "Agent — work leads" is gone with the lead-desk screens. An
     // existing agent keeps their role: it is added back to the list only
     // for that user, so editing them cannot silently change what they are.
-    const roles = [['viewer', 'Viewer — read only'],
-      ['admin', 'Admin — manage settings'], ['owner', 'Owner — full control']];
+    const roles = [['viewer', 'Viewer — read only'], ['owner', 'Owner — full control']];
     if (user?.role && !roles.some(([key]) => key === user.role)) {
       roles.unshift([user.role, `${user.role} — current role`]);
     }
     const role = select(roles, user?.role || 'viewer');
     const password = h('input', { type: 'password', autocomplete: 'new-password' });
-    const active = h('input', { type: 'checkbox', checked: user ? user.is_active : true });
+    // No "Can sign in" switch: a new user can, and an existing one keeps
+    // whatever they are. Deactivating is the Disable action on the list,
+    // which is where someone looks for it.
+    const isActive = user ? user.is_active : true;
 
     const submit = h('button.btn.btn-primary', {
       type: 'button',
@@ -526,7 +547,7 @@
         const payload = {
           display_name: name.value.trim(),
           role: role.value,
-          is_active: active.checked,
+          is_active: isActive,
         };
         if (isNew) { payload.email = emailInput.value.trim(); payload.password = password.value; }
         else if (password.value) payload.password = password.value;
@@ -549,8 +570,6 @@
         isNew ? field('Email', emailInput) : null,
         field('Role', role),
         field(isNew ? 'Password (12+ characters)' : 'New password (leave blank to keep)', password),
-        h('label.field', {}, [h('span', { text: 'Access' }),
-          h('div', {}, [active, ' ', 'Can sign in'])]),
         submit,
       ].filter(Boolean),
     });

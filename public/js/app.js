@@ -57,7 +57,7 @@
       icon: 'M4 5h6v6H4zM14 5h6v6h-6zM4 13h6v6H4zM14 13h6v6h-6z' },
   ];
 
-  const session = { user: null, counts: {}, permissions: null, unread: 0 };
+  const session = { user: null, counts: {}, permissions: null };
   let current = { path: 'dashboard', params: {} };
 
   /** Every view module, merged into one lookup for the router. */
@@ -214,7 +214,6 @@
       })
       .catch(() => {});
 
-    startNotificationBadge();
 
     window.addEventListener('hashchange', render);
     render();
@@ -265,28 +264,6 @@
 
     mount(host, picker);
     host.classList.remove('hidden');
-  }
-
-  /**
-   * Unread count in the sidebar. Polled rather than pushed: this admin
-   * has no websocket, and a 60-second poll is cheap next to adding one.
-   */
-  function startNotificationBadge() {
-    const paint = async () => {
-      try {
-        const { unread } = await api.get('/api/ops/notifications?unread_only=true&limit=10');
-        session.unread = unread;
-        const host = document.getElementById('notify-badge');
-        if (!host) return;
-        host.textContent = unread ? String(unread) : '';
-        host.classList.toggle('hidden', !unread);
-      } catch (err) {
-        // A role without ops.view gets a 403 here; stop asking.
-        if (err.status === 403) clearInterval(timer);
-      }
-    };
-    const timer = setInterval(paint, 60000);
-    paint();
   }
 
   boot();

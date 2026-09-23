@@ -11,12 +11,12 @@
     textInput, textarea, checkbox, formatDate, relativeTime, openDrawer } = kit;
 
   async function account(ctx) {
-    const tab = ctx.params.tab || 'profile';
+    const tab = ctx.params.tab === 'sessions' ? 'sessions' : 'security';
     mount(ctx.el, ui.spinner());
 
-    // Roles & permissions and Sites are no longer tabs here, so neither
-    // is fetched. Both APIs stay; any override already saved still
-    // applies — it is only edited elsewhere now.
+    // Profile, Roles & permissions and Sites are no longer tabs here.
+    // /api/profile is still read: Security needs to know whether
+    // two-factor is on, and the head needs the name and role.
     const [{ profile }, sessions] = await Promise.all([
       api.get('/api/profile'),
       api.get('/api/sessions'),
@@ -25,17 +25,15 @@
     ctx.setHead('Account', `${profile.display_name} · ${profile.role}`);
 
     const strip = tabs(ctx, [
-      ['profile', 'Profile'],
-      ['security', 'Security', profile.totp_enabled ? null : '!'],
+      ['security', 'Security'],
       ['sessions', 'Sessions', sessions.sessions.length],
     ], tab);
 
     const panes = {
-      profile: () => profilePane(ctx, profile),
       security: () => securityPane(ctx, profile),
       sessions: () => sessionsPane(ctx, sessions),
     };
-    mount(ctx.el, [strip, (panes[tab] || panes.profile)()]);
+    mount(ctx.el, [strip, (panes[tab] || panes.security)()]);
   }
 
   // ============================================================= profile
@@ -94,11 +92,6 @@
             field(key === 'x' ? 'X / Twitter' : key[0].toUpperCase() + key.slice(1), control)),
           h('p.muted', { text: 'https:// only — anything else is dropped on save.' }),
         ])),
-        panel('Your permissions', panelBody([
-          h('p.muted', { text: `Role: ${profile.role} · ${profile.permissions.length} permission(s)` }),
-          h('div.chips', {}, profile.permissions.map((p) =>
-            h('span.chip.is-static', { text: p }))),
-        ])),
       ]),
     ]);
   }
@@ -126,20 +119,9 @@
           toast(`Password changed. ${result.sessionsEnded} other session(s) ended.`);
         }, { primary: true }),
       ])),
-      panel('Two-factor authentication', panelBody(
-        profile.totp_enabled
-          ? [
-            notice('Two-factor authentication is on. You will be asked for a code '
-              + 'after your password at every sign-in.', 'info'),
-            actionButton('Generate new recovery codes', () => regenerateCodes(ctx)),
-            confirmButton('Turn off two-factor', () => disableTotp(ctx)),
-          ]
-          : [
-            notice('Two-factor authentication is off. Turning it on means a stolen '
-              + 'password alone is not enough to sign in.', 'warn'),
-            actionButton('Set up two-factor', () => startTotp(ctx), { primary: true }),
-          ],
-      )),
+      // The two-factor panel is not shown here any more. The 2FA API is
+      // untouched: anyone who already turned it on is still asked for a
+      // code at sign-in, and startTotp/disableTotp below still work.
     ]);
   }
 

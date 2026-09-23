@@ -230,6 +230,10 @@ async def _get_page(scoped: db.TenantDB, page_id: int) -> dict:
 async def list_pages(scoped: db.TenantDB = Depends(tenant_db)) -> dict:
     rows = await scoped.fetch(
         """SELECT p.id, p.slug, p.title, p.status::text AS status, p.mode,
+                  -- description and seo travel with the list so the SEO
+                  -- screen can show every page's meta tags without a
+                  -- request per page.
+                  p.description, p.seo,
                   p.published_at, p.updated_at, u.display_name AS updated_by_name
              FROM pages p LEFT JOIN users u ON u.id = p.updated_by
             WHERE p.tenant_id = $1 ORDER BY p.updated_at DESC"""

@@ -1,22 +1,27 @@
 /* global window, api, kit, ui */
 /**
- * SEO & site discovery (2.2) — redirects, the 404 log, sitemap and
- * robots.txt. Per-page meta lives in the content editor, next to the
- * content it describes.
+ * SEO & site discovery (2.2) — every page's meta tags, redirects, the
+ * 404 log, sitemap and robots.txt.
+ *
+ * The Pages tab is the one place that answers "what does this site tell
+ * a search engine about each of its pages"; the same fields are also on
+ * each page's own settings drawer, because that is where someone is
+ * when they finish writing one.
  */
 (function () {
   'use strict';
 
   const { h, mount, toast, table, panel, panelBody, toolbar, search, badge, select,
-    formDrawer, confirmButton, actionButton, notice, tabs, bool,
+    formDrawer, confirmButton, actionButton, notice, tabs, bool, counted,
     textInput, textarea, formatDate, relativeTime, number } = kit;
 
   async function seo(ctx) {
-    const tab = ctx.params.tab || 'redirects';
-    ctx.setHead('SEO', 'Redirects, missing pages, sitemap and crawler rules.');
+    const tab = ctx.params.tab || 'pages';
+    ctx.setHead('SEO', 'Meta tags, redirects, missing pages, sitemap and crawler rules.');
     mount(ctx.el, ui.spinner());
 
-    const [redirects, notFound, sitemaps, robots] = await Promise.all([
+    const [pages, redirects, notFound, sitemaps, robots] = await Promise.all([
+      api.get('/api/pages').catch(() => ({ pages: [] })),
       api.get(`/api/seo/redirects${api.qs({ q: ctx.params.q })}`),
       api.get('/api/seo/not-found'),
       api.get('/api/seo/sitemaps'),
@@ -24,6 +29,7 @@
     ]);
 
     const strip = tabs(ctx, [
+      ['pages', 'Pages', pages.pages.length],
       ['redirects', 'Redirects', redirects.redirects.length],
       ['not-found', '404s', notFound.notFound.filter((n) => !n.resolved_redirect_id).length],
       ['sitemap', 'Sitemap', sitemaps.sitemaps.length],
@@ -31,20 +37,150 @@
     ], tab);
 
     const panes = {
+      pages: () => pagesPane(ctx, pages.pages),
       redirects: () => redirectsPane(ctx, redirects),
       'not-found': () => notFoundPane(ctx, notFound),
       sitemap: () => sitemapPane(ctx, sitemaps),
       robots: () => robotsPane(ctx, robots),
     };
 
-    ctx.setHead('SEO', 'Redirects, missing pages, sitemap and crawler rules.',
+    ctx.setHead('SEO', 'Meta tags, redirects, missing pages, sitemap and crawler rules.',
       tab === 'redirects'
         ? h('button.btn.btn-primary', {
           type: 'button', text: 'New redirect', onclick: () => editRedirect(ctx, null),
         })
         : null);
 
-    mount(ctx.el, [strip, (panes[tab] || panes.redirects)()]);
+    mount(ctx.el, [strip, (panes[tab] || panes.pages)()]);
+  }
+
+  // ================================================== per-page meta tags
+  // Google truncates a title around 60 characters and a description
+  // around 160; below 30 / 70 there is usually room to say more. The
+  // counters colour on those bounds rather than enforcing them.
+  const TITLE_RANGE = [30, 60];
+  const DESC_RANGE = [70, 160];
+
+  function pagesPane(ctx, pages) {
+    const tenant = ctx.session.user.tenantSlug;
+    const lengthNote = (value, [min, max]) => {
+      const n = (value || '').length;
+      if (!n) return 'missing';
+      if (n < min) return `${n} — short`;
+      if (n > max) return `${n} — will be cut off`;
+      return `${n} characters`;
+    };
+
+    return h('div.stack', {}, [
+      panelBody(h('p.muted', {
+        text: 'The title and description a search result shows for each page. '
+          + 'Left empty, the title falls back to the page’s own title and the '
+          + 'description to nothing — so a page with no description is one '
+          + 'Google writes the snippet for.',
+      })),
+      panel(null, table([
+        {
+          label: 'Page',
+          cell: (p) => [
+            h('div.cell-name', { text: p.title }),
+            h('div.cell-meta.mono', { text: `/p/${tenant}/${p.slug}` }),
+          ],
+        },
+        {
+          label: 'Meta title',
+          cell: (p) => [
+            h('div', { text: (p.seo || {}).meta_title || p.title }),
+            h('div.cell-meta', {
+              text: (p.seo || {}).meta_title
+                ? lengthNote((p.seo || {}).meta_title, TITLE_RANGE)
+                : 'using the page title',
+            }),
+          ],
+        },
+        {
+          label: 'Meta description',
+          cell: (p) => [
+            h('div', { text: p.description || '—' }),
+            h('div.cell-meta', { text: lengthNote(p.description, DESC_RANGE) }),
+          ],
+        },
+        {
+          label: 'Indexing',
+          cell: (p) => {
+            const seo = p.seo || {};
+            if (p.status !== 'published') return badge('draft — not live', 'off');
+            if (seo.noindex) return badge('noindex', 'off');
+            return badge(seo.nofollow ? 'nofollow' : 'indexed', 'ok');
+          },
+        },
+        {
+          label: '',
+          cell: (p) => h('div.row-actions', {}, [
+            actionButton('Edit meta', () => editPageMeta(ctx, p), { small: true }),
+            h('a.btn.btn-sm', { href: `#/pages?edit=${p.id}`, text: 'Open page' }),
+          ]),
+        },
+      ], pages, { empty: 'No pages yet. Create one under Page builder.' })),
+    ]);
+  }
+
+  /**
+   * One page's meta tags.
+   *
+   * Saves through the page API (PATCH /api/pages/{id}), the same call
+   * the page's own settings drawer makes, so there is one definition of
+   * what a page's meta is and no second path that could disagree. The
+   * SEO block is spread first: focus keyword, Schema.org and the social
+   * image are stored in it too and no field here owns them.
+   */
+  function editPageMeta(ctx, page) {
+    const seo = page.seo || {};
+    const metaTitle = textInput('meta_title', seo.meta_title, { maxlength: 80,
+      placeholder: page.title });
+    const description = textarea('description', page.description, { rows: 3, maxlength: 300 });
+    const canonical = textInput('canonical', seo.canonical, { maxlength: 500,
+      placeholder: 'https://example.com/the-real-page' });
+    const ogTitle = textInput('og_title', seo.og_title, { maxlength: 120,
+      placeholder: 'defaults to the meta title' });
+    const ogDescription = textarea('og_description', seo.og_description, { rows: 2, maxlength: 320 });
+    const noindex = h('input', { type: 'checkbox', checked: Boolean(seo.noindex) });
+    const nofollow = h('input', { type: 'checkbox', checked: Boolean(seo.nofollow) });
+
+    formDrawer({
+      title: `Meta tags — ${page.title}`,
+      subtitle: `/p/${ctx.session.user.tenantSlug}/${page.slug}`,
+      fields: [
+        { name: 'meta_title', label: 'Meta title', control: counted(metaTitle, ...TITLE_RANGE, seo.meta_title || ''),
+          help: '<title> and the blue line in a search result. Empty uses the page title.' },
+        { name: 'description', label: 'Meta description', control: counted(description, ...DESC_RANGE, page.description || ''),
+          help: '<meta name="description"> — the grey snippet under the link.' },
+        { name: 'canonical', label: 'Canonical URL', control: canonical,
+          help: 'Only when this page duplicates another. Empty means the page’s own URL.' },
+        { name: 'og_title', label: 'Share title (Open Graph)', control: ogTitle },
+        { name: 'og_description', label: 'Share description', control: ogDescription,
+          help: 'Used by Facebook, LinkedIn, WhatsApp and X. Empty falls back to the meta description.' },
+        { label: 'Crawlers', control: h('div.stack', {}, [
+          h('label.pb-check', {}, [noindex, 'noindex — keep this page out of search results']),
+          h('label.pb-check', {}, [nofollow, 'nofollow — do not follow links on this page']),
+        ]) },
+      ],
+      onSave: async (values) => {
+        await api.patch(`/api/pages/${page.id}`, {
+          description: values.description || null,
+          seo: {
+            ...seo,
+            meta_title: values.meta_title || '',
+            canonical: values.canonical || '',
+            og_title: values.og_title || '',
+            og_description: values.og_description || '',
+            noindex: noindex.checked,
+            nofollow: nofollow.checked,
+          },
+        });
+        toast('Meta tags saved. Publish the page to put them live.');
+        ctx.reload();
+      },
+    });
   }
 
   function redirectsPane(ctx, data) {

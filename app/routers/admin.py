@@ -292,6 +292,62 @@ async def update_user(
     return {"user": {**updated, "open_leads": 0}}
 
 
+
+@router.delete("/users/{user_id}")
+async def delete_user(
+    user_id: int,
+    request: Request,
+    user: CurrentUser = Depends(require_role("admin")),
+) -> dict:
+    """Remove a user from this workspace.
+
+    What they *made* stays: pages, media and leads reference their
+    author with ON DELETE SET NULL, so a deleted user leaves the work
+    behind and only stops being named on it. What is theirs alone —
+    sessions, password-reset tokens, notification preferences — goes
+    with them, which is also what signs them out everywhere.
+
+    Three refusals, in the order someone runs into them: your own
+    account (deleting it would end the session mid-request), an owner
+    or super admin when you are not one (the same rule as changing
+    them), and the last owner a workspace has (a site nobody can fully
+    administer is a support ticket, not a valid state). Deactivating a
+    user is the reversible alternative.
+    """
+    if user_id == user.id:
+        raise HTTPException(400, "You cannot delete your own account.")
+
+    scoped = db.TenantDB(user.tenant_id)
+    target = await scoped.fetch_one(
+        "SELECT id, email, display_name, role::text AS role FROM users WHERE tenant_id = $1 AND id = $2",
+        user_id,
+    )
+    if not target:
+        raise HTTPException(404, "That user no longer exists.")
+    if target["role"] in {"owner", "super_admin"} and user.role not in {"owner", "super_admin"}:
+        raise HTTPException(403, "Only an owner can delete an owner or super admin.")
+
+    if target["role"] == "owner":
+        others = await scoped.fetch_one(
+            """SELECT count(*)::int AS n FROM users
+                WHERE tenant_id = $1 AND role = 'owner' AND id <> $2 AND is_active""",
+            user_id,
+        )
+        if not others["n"]:
+            raise HTTPException(400, "This is the only owner — make someone else an owner first.")
+
+    await scoped.execute("DELETE FROM users WHERE tenant_id = $1 AND id = $2", user_id)
+    await events.log_activity(
+        user.tenant_id,
+        "user.deleted",
+        user_id=user.id,
+        object_type="user",
+        object_id=user_id,
+        meta={"email": target["email"], "role": target["role"]},
+        ip=db.to_inet(client_ip(request)),
+    )
+    return {"ok": True, "deleted": target["display_name"] or target["email"]}
+
 # =============================================================== webhooks
 def _reject_internal_url(raw: str) -> str:
     """Admin-supplied URLs are an SSRF vector — an endpoint pointing at

@@ -11,36 +11,17 @@
     textInput, textarea, checkbox, formatDate, relativeTime, openDrawer, pager } = kit;
 
   async function forms(ctx) {
-    const tab = ctx.params.tab || 'forms';
     mount(ctx.el, ui.spinner());
 
-    const [formsData, templates, conversions] = await Promise.all([
-      api.get('/api/forms'),
-      api.get('/api/templates'),
-      api.get(`/api/conversions${api.qs({ days: ctx.params.days || 30 })}`),
-    ]);
+    // Email templates and Conversions are no longer tabs here, so
+    // neither is fetched; both APIs and their panes stay in the file.
+    const formsData = await api.get('/api/forms');
 
-    ctx.setHead('Forms', 'Field definitions, spam protection, lead mapping and notifications.',
-      tab === 'forms'
-        ? h('button.btn.btn-primary', { type: 'button', text: 'New form',
-          onclick: () => editForm(ctx, formsData, null) })
-        : tab === 'templates'
-          ? h('button.btn.btn-primary', { type: 'button', text: 'New template',
-            onclick: () => editTemplate(ctx, null) })
-          : null);
+    ctx.setHead('Forms', 'Fields, submissions and where they go.',
+      h('button.btn.btn-primary', { type: 'button', text: 'New form',
+        onclick: () => editForm(ctx, formsData, null) }));
 
-    const strip = tabs(ctx, [
-      ['forms', 'Forms', formsData.forms.length],
-      ['templates', 'Email templates', templates.templates.length],
-      ['conversions', 'Conversions', conversions.byKind.reduce((a, b) => a + b.n, 0)],
-    ], tab);
-
-    const panes = {
-      forms: () => formsPane(ctx, formsData),
-      templates: () => templatesPane(ctx, templates),
-      conversions: () => conversionsPane(ctx, conversions),
-    };
-    mount(ctx.el, [strip, (panes[tab] || panes.forms)()]);
+    mount(ctx.el, formsPane(ctx, formsData));
   }
 
   // =============================================================== forms
