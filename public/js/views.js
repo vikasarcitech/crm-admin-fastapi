@@ -506,9 +506,15 @@
     const isNew = !user;
     const name = h('input', { type: 'text', value: user?.display_name || '' });
     const emailInput = h('input', { type: 'email', value: user?.email || '', disabled: !isNew });
-    const role = select([['viewer', 'Viewer — read only'], ['agent', 'Agent — work leads'],
-      ['admin', 'Admin — manage settings'], ['owner', 'Owner — full control']],
-    user?.role || 'agent');
+    // "Agent — work leads" is gone with the lead-desk screens. An
+    // existing agent keeps their role: it is added back to the list only
+    // for that user, so editing them cannot silently change what they are.
+    const roles = [['viewer', 'Viewer — read only'],
+      ['admin', 'Admin — manage settings'], ['owner', 'Owner — full control']];
+    if (user?.role && !roles.some(([key]) => key === user.role)) {
+      roles.unshift([user.role, `${user.role} — current role`]);
+    }
+    const role = select(roles, user?.role || 'viewer');
     const password = h('input', { type: 'password', autocomplete: 'new-password' });
     const active = h('input', { type: 'checkbox', checked: user ? user.is_active : true });
 
