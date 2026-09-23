@@ -904,6 +904,65 @@
 
   const PALETTE_GROUPS = ['Layout', 'Content', 'Media', 'Marketing', 'Site'];
 
+  // One line per block for the Add block panel — what it is for, in the
+  // words someone looks for, so search finds "testimonial" and "review".
+  const BLOCK_DESC = {
+    hero: 'Big opening: headline, subheading, buttons, optional cover photo.',
+    heading: 'A section title, with an optional eyebrow and subheading.',
+    text: 'Paragraphs with bold, links, lists and quotes.',
+    image: 'One picture, sized and aligned, optionally linked.',
+    gallery: 'A grid of photos in 2–5 columns.',
+    video: 'A YouTube or Vimeo video, from its normal link.',
+    map: 'A Google map of an address.',
+    button: 'A call-to-action link styled as a button.',
+    quote: 'A pull quote with attribution.',
+    table: 'Rows and columns typed as text.',
+    faq: 'Questions that expand to show their answers.',
+    steps: 'Numbered steps — how it works.',
+    columns: 'Two to four columns, each with image, text and a button.',
+    media_text: 'A picture beside text, either side.',
+    spacer: 'Empty vertical space.',
+    divider: 'A horizontal line between sections.',
+    features: 'Benefits or services in a grid, with icons.',
+    cta: 'A coloured banner asking visitors to act.',
+    pricing: 'Plans side by side with feature lists.',
+    testimonials: 'Customer reviews with names, roles and stars.',
+    stats: 'Big numbers with labels: customers, uptime, years.',
+    logos: 'A strip of client or partner logos.',
+    team: 'People with photos, roles and short bios.',
+    notice: 'A slim announcement bar with a link.',
+    form: 'A lead form that saves to this CRM.',
+    header: 'Site navigation: logo, menu links, a button.',
+    footer: 'Link columns, social links and a copyright line.',
+    contact: 'Address, phone, email and hours, with a map.',
+    social: 'Links to your social profiles.',
+    html: 'Your own HTML, CSS — or a whole document.',
+  };
+
+  /**
+   * Starter pages, for the empty state: a set of blocks that already
+   * reads as a page, so the first minute is editing words rather than
+   * assembling structure. Each is built from the blocks' own defaults.
+   */
+  const mk = (type, extra = {}) => ({ ...BLOCKS[type].make(), ...extra });
+  const TEMPLATES = [
+    ['landing', 'Landing page', 'Header, hero, features, testimonials, pricing, call to action, footer.', () => [
+      mk('header'), mk('hero', { heading: 'A clear promise, in one line', sub: 'One sentence on who it is for and why it matters.', button_label: 'Get started', button_href: '#pricing', button2_label: 'See how it works', button2_href: '#how' }),
+      mk('logos'), mk('features'), mk('steps', { design: { anchor: 'how', bg: 'tint', padding: 'medium', width: 'full' } }),
+      mk('testimonials'), mk('pricing', { design: { anchor: 'pricing' } }), mk('faq'), mk('cta'), mk('footer'),
+    ]],
+    ['about', 'About page', 'Header, story, values, team, call to action, footer.', () => [
+      mk('header'), mk('hero', { heading: 'About us', sub: 'Who we are and what we stand for.', size: 'normal' }),
+      mk('media_text', { heading: 'Our story', body: 'How it started, and where it is going.' }),
+      mk('features', { heading: 'What we value', style: 'icons' }), mk('stats'), mk('team'), mk('cta', { heading: 'Work with us', style: 'tint' }), mk('footer'),
+    ]],
+    ['contact', 'Contact page', 'Header, contact details with a map, lead form, footer.', () => [
+      mk('header'), mk('heading', { text: 'Get in touch', sub: 'We reply within one business day.', align: 'center' }),
+      mk('contact', { show_map: true }), mk('form'), mk('footer'),
+    ]],
+    ['blank', 'Blank page', 'Start from nothing.', () => []],
+  ];
+
   // The Design panel every block drawer ends with. Same spec language.
   const DESIGN_FIELDS = [
     ['bg', 'Background', 'select', [['none', 'None'], ['tint', 'Light tint'], ['primary', 'Primary colour'],
@@ -1212,11 +1271,24 @@
 
     function renderBlockList() {
       if (!blocks.length) {
-        return mount(blockList, h('p.muted', { text: 'No blocks yet — add one below.' }));
+        return mount(blockList, admin ? h('div.pb-empty', {}, [
+          h('h3', { text: 'Start with a page, not a blank one' }),
+          h('p.muted', { text: 'Pick a starter and edit its words — every block stays editable, movable and removable.' }),
+          h('div.pb-templates', {}, TEMPLATES.map(([key, label, desc, make]) => h('button.pb-template', {
+            type: 'button',
+            onclick: async () => {
+              blocks = make();
+              await saveBlocks();
+              if (key !== 'blank') toast(`${label} added — click any block to edit it`);
+              else openAddBlock();
+            },
+          }, [h('strong', { text: label }), h('span', { text: desc })]))),
+        ]) : h('p.muted', { text: 'No blocks yet.' }));
       }
       mount(blockList, blocks.map((block, index) => {
         const def = BLOCKS[block.type] || { label: block.type, summary: () => '' };
-        return h('div.pb-row', {}, [
+        const active = block.type === 'html' && index === codeIndex;
+        return h(`div.pb-row${active ? '.is-active' : ''}`, {}, [
           h('div.pb-row-main', {
             // An HTML block has no drawer — its row jumps to the code
             // section below instead.
@@ -1236,7 +1308,11 @@
           ]),
           admin ? h('div.pb-row-actions', {}, [
             h('button.icon-btn', {
-              type: 'button', text: '⧉', 'aria-label': 'Duplicate block',
+              type: 'button', text: '+', 'aria-label': 'Add a block below', title: 'Add a block below',
+              onclick: () => openAddBlock(index + 1),
+            }),
+            h('button.icon-btn', {
+              type: 'button', text: '⧉', 'aria-label': 'Duplicate block', title: 'Duplicate',
               onclick: () => { blocks.splice(index + 1, 0, JSON.parse(JSON.stringify(block))); saveBlocks(); },
             }),
             h('button.icon-btn', {
@@ -1648,24 +1724,52 @@
     }
 
     // ------------------------------------------------------------ layout
-    const addBlock = (type, def) => {
+    /** Add a block of `type` at position `at` (default: the end). */
+    const addBlock = (type, def, at = blocks.length) => {
       const block = def.make();
-      blocks.push(block);
-      if (type === 'html') { codeIndex = blocks.length - 1; setSideView('html'); saveBlocks(); }
-      else if (def.fields.length) blockDrawer(block, blocks.length - 1);
+      blocks.splice(at, 0, block);
+      if (type === 'html') { codeIndex = at; setSideView('html'); saveBlocks(); }
+      else if (def.fields.length) blockDrawer(block, at);
       else saveBlocks();
     };
-    // Grouped: Layout, Content, Media, Marketing, Site. Thirty buttons in
-    // one row is a list you have to read; five groups is one you scan.
-    const palette = admin ? h('div.pb-palette', {}, PALETTE_GROUPS.map((group) => {
-      const members = Object.entries(BLOCKS).filter(([, def]) => def.group === group);
-      return members.length ? h('div.pb-palette-group', {}, [
-        h('div.pb-palette-label', { text: group }),
-        h('div.pb-palette-row', {}, members.map(([type, def]) => h('button.btn.btn-sm', {
-          type: 'button', text: `+ ${def.label}`, onclick: () => addBlock(type, def),
-        }))),
-      ]) : null;
-    })) : h('p.muted', { text: 'Admins can edit this page.' });
+
+    /**
+     * The Add block panel: every block, grouped, with a line on what it
+     * is for, and a search box that matches label, description and
+     * group — so "review" finds Testimonials. `at` is where the block
+     * goes; the "+" on a row passes the row below it.
+     */
+    function openAddBlock(at = blocks.length) {
+      const search = h('input', { type: 'search', placeholder: 'Search blocks — e.g. pricing, video, reviews', autofocus: 'autofocus' });
+      const list = h('div.pb-add-list');
+      const paint = () => {
+        const q = search.value.trim().toLowerCase();
+        const groups = PALETTE_GROUPS.map((group) => {
+          const members = Object.entries(BLOCKS).filter(([type, def]) => def.group === group
+            && (!q || `${def.label} ${BLOCK_DESC[type] || ''} ${group}`.toLowerCase().includes(q)));
+          return members.length ? h('div.pb-add-group', {}, [
+            h('div.pb-palette-label', { text: group }),
+            h('div.pb-add-grid', {}, members.map(([type, def]) => h('button.pb-add-card', {
+              type: 'button',
+              onclick: () => { closeDrawer(); addBlock(type, def, at); },
+            }, [h('strong', { text: def.label }), h('span', { text: BLOCK_DESC[type] || '' })]))),
+          ]) : null;
+        }).filter(Boolean);
+        mount(list, groups.length ? groups : h('p.muted', { text: 'Nothing matches. Try another word — or use an HTML block.' }));
+      };
+      search.addEventListener('input', paint);
+      paint();
+      openDrawer({
+        title: 'Add a block',
+        subtitle: at < blocks.length ? `It goes in at position ${at + 1}.` : 'It goes at the end of the page.',
+        body: [field('Find a block', search), list],
+      });
+      setTimeout(() => search.focus(), 30);
+    }
+
+    const palette = admin
+      ? h('div.pb-palette', {}, [h('button.btn.btn-primary', { type: 'button', text: '+ Add block', onclick: () => openAddBlock() })])
+      : h('p.muted', { text: 'Admins can edit this page.' });
 
     // --------------------------------------------------- code section
     /**
@@ -1993,9 +2097,39 @@
     // page's HTML. A dropdown switches between them; the choice sticks
     // across pages so someone who works in code lands in code.
     const blocksPanel = h('section.panel', {}, [
-      h('div.panel-head', {}, [h('h2', { text: 'Blocks' })]),
+      h('div.panel-head', {}, [
+        h('h2', { text: 'Blocks' }),
+        h('div.spacer'),
+        admin ? h('span.md-hint', { text: 'Click a block to edit · drag order with ↑ ↓' }) : null,
+      ]),
       h('div.panel-body', {}, [blockList, h('div', { style: 'height:12px' }), palette]),
     ]);
+
+    // Preview toolbar: see the page at phone, tablet and desktop widths
+    // without leaving the editor; reload it; open the real draft.
+    const previewHost = h('div.pb-preview');
+    let device = 'desktop';
+    try { device = localStorage.getItem('pb-device') || 'desktop'; } catch { /* private mode */ }
+    const deviceButtons = {};
+    const setDevice = (name) => {
+      device = name;
+      previewHost.dataset.device = name;
+      Object.entries(deviceButtons).forEach(([key, btn]) => { btn.dataset.on = key === name ? '1' : '0'; });
+      try { localStorage.setItem('pb-device', name); } catch { /* private mode */ }
+    };
+    [['desktop', 'Desktop', 'Full width'], ['tablet', 'Tablet', '820px wide'], ['mobile', 'Phone', '390px wide']]
+      .forEach(([key, label, title]) => {
+        deviceButtons[key] = h('button.pb-device', { type: 'button', text: label, title, onclick: () => setDevice(key) });
+      });
+    const previewBar = h('div.pb-preview-bar', {}, [
+      h('div.pb-devices', {}, Object.values(deviceButtons)),
+      h('div.spacer'),
+      h('span.md-hint', { text: 'Draft preview' }),
+      h('button.btn.btn-sm', { type: 'button', text: 'Reload', onclick: refreshPreview }),
+      h('a.btn.btn-sm', { href: `/api/pages/${id}/preview`, target: '_blank', rel: 'noopener', text: 'Open ↗' }),
+    ]);
+    mount(previewHost, [previewBar, h('div.pb-frame', {}, iframe)]);
+    setDevice(device);
     const sideBody = h('div.pb-side-body');
     const viewSelect = select([['blocks', 'Block view'], ['html', 'HTML view']], 'blocks',
       (e) => setSideView(e.target.value));
@@ -2007,7 +2141,7 @@
         h('div.pb-side-switch', {}, [h('span.pb-side-label', { text: 'Show' }), viewSelect]),
         sideBody,
       ]),
-      h('div.pb-preview', {}, iframe),
+      previewHost,
     ]));
     if (!htmlPage) setSideView(sideView);
 

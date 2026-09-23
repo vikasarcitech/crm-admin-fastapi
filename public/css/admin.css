@@ -1220,3 +1220,62 @@ textarea.pb-code {
   .pb-code-wrap, .pb-code-wrap textarea.pb-code,
   .pb-editor.is-html .pb-code-wrap, .pb-editor.is-html .pb-code-wrap textarea.pb-code { height: 50vh; max-height: none; }
 }
+
+/* ------------------------------------------- page builder: polish */
+/* The preview stays put while the block list scrolls beside it. */
+.pb-preview { position: sticky; top: 12px; }
+.pb-preview-bar {
+  display: flex; align-items: center; gap: 8px; margin-bottom: 8px; flex-wrap: wrap;
+}
+.pb-preview-bar .md-hint { margin: 0; }
+.pb-devices { display: inline-flex; border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden; }
+.pb-device {
+  font: 12px/1 var(--sans); padding: 7px 11px; border: 0; background: var(--surface);
+  color: var(--muted); cursor: pointer; border-right: 1px solid var(--line);
+}
+.pb-device:last-child { border-right: 0; }
+.pb-device[data-on='1'] { background: var(--ink); color: #fff; }
+/* Frame: full width on desktop; a centred device-sized column otherwise,
+   on a soft backdrop so the edges of the page read as a screen. */
+.pb-frame { display: flex; justify-content: center; }
+.pb-preview[data-device='tablet'] .pb-frame,
+.pb-preview[data-device='mobile'] .pb-frame {
+  background: repeating-linear-gradient(45deg, var(--line-soft) 0 6px, transparent 6px 14px);
+  border-radius: var(--radius); padding: 14px 0;
+}
+.pb-preview[data-device='tablet'] iframe { width: 820px; max-width: 100%; box-shadow: 0 10px 40px -20px rgba(0,0,0,.4); }
+.pb-preview[data-device='mobile'] iframe { width: 390px; max-width: 100%; border-radius: 22px; box-shadow: 0 10px 40px -20px rgba(0,0,0,.5); }
+.pb-preview iframe { transition: width .2s ease; }
+
+/* Block rows: the one being edited in the code pane is marked. */
+.pb-list .pb-row.is-active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.pb-list .pb-row:hover { border-color: var(--line); }
+.pb-row-actions .icon-btn { opacity: .55; }
+.pb-row:hover .pb-row-actions .icon-btn, .pb-row-actions .icon-btn:focus-visible { opacity: 1; }
+
+/* Empty state with starters. */
+.pb-empty { padding: 6px 0 2px; }
+.pb-empty h3 { margin: 0 0 4px; font-size: 15px; }
+.pb-templates { display: grid; gap: 8px; margin-top: 12px; }
+.pb-template {
+  display: grid; gap: 2px; text-align: left; padding: 11px 13px; cursor: pointer;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); font: inherit; color: inherit;
+}
+.pb-template:hover, .pb-template:focus-visible { border-color: var(--accent); background: var(--line-soft); }
+.pb-template strong { font-size: 13.5px; }
+.pb-template span { font-size: 12.5px; color: var(--muted); }
+
+/* Add block panel: grouped cards with a one-line purpose each. */
+.pb-add-list { display: grid; gap: 16px; }
+.pb-add-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; }
+.pb-add-card {
+  display: grid; gap: 3px; text-align: left; padding: 10px 12px; cursor: pointer; font: inherit; color: inherit;
+  border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface);
+}
+.pb-add-card:hover, .pb-add-card:focus-visible { border-color: var(--accent); background: var(--line-soft); }
+.pb-add-card strong { font-size: 13.5px; }
+.pb-add-card span { font-size: 12px; color: var(--muted); line-height: 1.4; }
+.pb-palette { margin-top: 4px; }
+
+/* Media: the single Assets library, named where the folder picker was. */
+.assets-pill { background: var(--line-soft); color: var(--ink); font-weight: 600; white-space: nowrap; }

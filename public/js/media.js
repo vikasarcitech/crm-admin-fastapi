@@ -18,26 +18,21 @@
     const page = Number(ctx.params.page) || 1;
 
     mount(ctx.el, ui.spinner());
-    const [data, folders, tags] = await Promise.all([
+    const [data] = await Promise.all([
       api.get(`/api/media${api.qs({
-        q: ctx.params.q, folder_id: ctx.params.folder_id, mime: ctx.params.mime,
-        tag: ctx.params.tag, unused: ctx.params.unused, trashed: trashed || '', page,
+        q: ctx.params.q, mime: ctx.params.mime,
+        trashed: trashed || '', page,
       })}`),
-      api.get('/api/media/folders/list'),
-      api.get('/api/media/tags'),
     ]);
 
     ctx.setHead('Media',
       `${data.library.files} file(s) · ${bytes(data.library.bytes)} · ${data.storage.backend} storage`,
       uploadButton(ctx));
 
-    const dropzone = h('div.dropzone', {}, [
-      h('strong', { text: 'Drop files here to upload' }),
-      h('span.muted', {
-        text: 'Images get WebP and AVIF variants at responsive widths automatically.',
-      }),
-    ]);
-    wireDropzone(ctx, dropzone);
+    // No drop panel: the Upload files button in the head is the way in.
+    // Dragging files onto the page still uploads them — the whole view
+    // is the drop target — it just no longer takes up a box to say so.
+    if (!trashed) wireDropzone(ctx, ctx.el);
 
     const grid = data.media.length
       ? h('div.media-grid', {}, data.media.map((m) => tile(ctx, m)))
@@ -70,30 +65,14 @@
         toolbar([
           search(ctx.params.q, (q) =>
             ctx.navigate(`#/media${api.qs({ ...ctx.params, q, page: 1 })}`)),
-          select([['', 'All folders'], ['0', 'Unfiled'],
-            ...folders.folders.map((f) => [f.id, `${f.name} (${f.file_count})`])],
-          ctx.params.folder_id || '',
-          (e) => ctx.navigate(`#/media${api.qs({ ...ctx.params, folder_id: e.target.value, page: 1 })}`)),
+          // Every upload — image, video, PDF — lives in the one Assets
+          // library; the type filter beside it is how you narrow it.
+          h('span.pill.assets-pill', { text: `Assets · ${data.total} file${data.total === 1 ? '' : 's'}` }),
           select([['', 'All types'], ['image', 'Images'], ['video', 'Video'],
             ['application/pdf', 'PDF'], ['text', 'Text']], ctx.params.mime || '',
           (e) => ctx.navigate(`#/media${api.qs({ ...ctx.params, mime: e.target.value, page: 1 })}`)),
-          select([['', 'All tags'], ...tags.tags.map((t) => [t.tag, `${t.tag} (${t.n})`])],
-            ctx.params.tag || '',
-            (e) => ctx.navigate(`#/media${api.qs({ ...ctx.params, tag: e.target.value, page: 1 })}`)),
           h('div.spacer'),
-          h('button.btn.btn-sm', {
-            type: 'button',
-            text: ctx.params.unused ? 'Showing unused' : 'Show unused only',
-            onclick: () => ctx.navigate(`#/media${api.qs({
-              ...ctx.params, unused: ctx.params.unused ? '' : '1', page: 1,
-            })}`),
-          }),
-          h('button.btn.btn-sm', {
-            type: 'button', text: 'Folders',
-            onclick: () => manageFolders(ctx, folders.folders),
-          }),
         ]),
-        trashed ? null : dropzone,
         grid,
         pager(ctx, data.page, data.pages),
       ]),
@@ -142,7 +121,6 @@
     const altInput = textInput('alt_text', m.alt_text, { maxlength: 300 });
     const titleInput = textInput('title', m.title, { maxlength: 200 });
     const captionInput = textarea('caption', m.caption, { rows: 2, maxlength: 600 });
-    const tagsInput = textInput('tags', (m.tags || []).join(', '));
 
     const usage = m.usage || [];
     const variants = m.variants || [];
@@ -157,14 +135,14 @@
             + 'Leave blank only for purely decorative images.' },
         { name: 'title', label: 'Title', control: titleInput },
         { name: 'caption', label: 'Caption', control: captionInput },
-        { name: 'tags', label: 'Tags', control: tagsInput, help: 'Comma separated.' },
       ],
       onSave: async (values) => {
         await api.patch(`/api/media/${m.id}`, {
           alt_text: values.alt_text || null,
           title: values.title || null,
           caption: values.caption || null,
-          tags: values.tags ? values.tags.split(',').map((s) => s.trim()).filter(Boolean) : [],
+          // Tags are no longer edited here; leaving the key out keeps
+          // whatever a file already has rather than wiping it.
         });
         toast('Saved.');
         ctx.reload();
@@ -174,8 +152,9 @@
         h('hr'),
         h('h3', { text: 'URLs' }),
         copyRow('Original', m.url),
-        ...Object.entries(m.srcset || {}).map(([mime, value]) =>
-          copyRow(`srcset (${mime})`, value)),
+        // The per-format srcset strings (webp, avif) are not offered here:
+        // the built pages pick the right format themselves, and the
+        // original URL is what people paste into an HTML block.
         variants.length
           ? h('p.muted', { text: `${variants.length} derivative(s) generated.` })
           : h('p.muted', { text: 'No derivatives — this is not a raster image.' }),
@@ -277,9 +256,6 @@
     for (const file of files.slice(0, 25)) {
       const body = new FormData();
       body.append('file', file);
-      if (ctx.params.folder_id && ctx.params.folder_id !== '0') {
-        body.append('folder_id', ctx.params.folder_id);
-      }
       try {
         // Deliberately not api.post: that JSON-encodes the body.
         const res = await fetch('/api/media', {
@@ -305,38 +281,6 @@
         : `${done} file(s) uploaded.`);
     }
     if (done || !failed) ctx.reload();
-  }
-
-  // ------------------------------------------------------------ folders
-  function manageFolders(ctx, folders) {
-    const nameInput = textInput('name', '');
-    openDrawer({
-      title: 'Folders',
-      subtitle: 'Deleting a folder unfiles its media rather than deleting it.',
-      body: [
-        table([
-          { label: 'Folder', cell: (f) => f.name },
-          { label: 'Files', class: 'cell-mono', cell: (f) => f.file_count },
-          {
-            label: '',
-            cell: (f) => confirmButton('Delete', async () => {
-              const result = await api.del(`/api/media/folders/${f.id}`);
-              toast(`Folder deleted. ${result.filesUnfiled} file(s) unfiled.`);
-              ctx.reload();
-            }, { small: true }),
-          },
-        ], folders, { empty: 'No folders yet.' }),
-        h('div.panel-body', {}, [
-          h('label.field', {}, [h('span', { text: 'New folder' }), nameInput]),
-          actionButton('Create folder', async () => {
-            if (!nameInput.value.trim()) throw new Error('Give the folder a name.');
-            await api.post('/api/media/folders', { name: nameInput.value.trim() });
-            toast('Folder created.');
-            ctx.reload();
-          }, { primary: true }),
-        ]),
-      ],
-    });
   }
 
   window.mediaViews = { media };
